@@ -97,19 +97,17 @@ typedef struct {
   ((bool) (list_elem != NULL && list_elem->prev != NULL && elem->next == NULL))
 
 static void list_init(list *);
-/*
-static list_elem * list_begin(list *);
+static list_elem * list_first(list *);
 static list_elem * list_next(list_elem *);
 static list_elem * list_prev(list_elem *);
-static list_elem * list_end(list *);
+static list_elem * list_last(list *);
 static void list_insert(list_elem *, list_elem *);
-static void list_push(list *, list_elem *);
+static void list_add(list *, list_elem *);
 static list_elem * list_delete(list_elem *);
-static list_elem * list_pop(list *);
+static list_elem * list_get(list *);
 static size_t list_size(list *);
 static int list_is_exist(list *);
-static void list_swap(list elem **, list elem **);
-*/
+static void list_swap(list_elem **, list_elem **);
 
 static list * bin;
 
@@ -146,7 +144,7 @@ static void list_init(list * list)
   list->tail.next = NULL;
 }
 
-static list_elem * list_begin(list * list)
+static list_elem * list_first(list * list)
 {
   if (list == NULL)
     return NULL;
@@ -170,7 +168,7 @@ static list_elem * list_prev(list_elem * elem)
     return elem->prev;
 }
 
-static list_elem * list_end(list * list)
+static list_elem * list_last(list * list)
 {
   if (list == NULL)
     return NULL;
@@ -185,20 +183,20 @@ static void list_insert
 
 }
 
-static void list_push(list * list, list_elem * elem)
+static void list_add(list * list, list_elem * elem)
 {
 
 
 
 }
 
-static list_elem * list_delete(list_elem * elem)
+static list_elem * list_remove(list_elem * elem)
 {
 
   return elem;
 }
 
-static list_elem * list_pop(list * list)
+static list_elem * list_get(list * list)
 {
 
   return NULL;
@@ -245,7 +243,7 @@ int mm_init(range_t **ranges)
  */
 void * mm_malloc(size_t size)
 {
-  int newsize = HEADER_SIZE + ALIGN(size) + SIZE_T_SIZE;
+/*  int newsize = ALIGN(sizeof(header)) + ALIGN(nbytes) + ALIGN(sizeof(size_t));
   void * ptr = mem_sbrk(newsize);
   if (ptr == (void *)-1)
     return NULL;
@@ -253,20 +251,13 @@ void * mm_malloc(size_t size)
     ((header *) ptr)->size = ALIGN(size);
     ((header *) ptr)->size |= 0x1;
     return (void *) ((char *) ptr + HEADER_SIZE);
-  }
+  }*/
+
+  return NULL;
 }
 
 header * mm_expand_heap(size_t num)
 {
-  int newsize = HEADER_SIZE + ALIGN(size) + SIZE_T_SIZE;
-  void * ptr = mem_sbrk(newsize);
-  if (ptr == (void *)-1)
-    return NULL;
-  else {
-    ((header *) ptr)->size = ALIGN(size);
-    ((header *) ptr)->size |= 0x1;
-    return (void *) ((char *) ptr + HEADER_SIZE);
-  }
 
   return NULL;
 }
