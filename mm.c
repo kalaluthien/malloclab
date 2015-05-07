@@ -44,15 +44,19 @@ static range_t ** gl_ranges;
 /* single word (4) or double word (8) alignment */
 #define ALIGNMENT 8
 
+#define MIN_HEAP_INC 1<<10
+
 /* rounds up to the nearest multiple of ALIGNMENT */
 #define ALIGN(size) (((size) + (ALIGNMENT-1)) & ~0x7)
 
 /* find the offset of member of a struct. */
 #define OFFSET_OF(type, member) ((size_t) &((type *) 0)->member)
 
-#define GET_SIZE(p) (*((size_t *) p) & ~0x7)
+#define GET_SIZE(h) (h->size & ~0x7)
 
-#define GET_ALLOC(p) (*((size_t *) p) & 0x3)
+#define GET_ALLOC(h) (h->size & 0x3)
+
+#define GET_HEADER(p) ((header *) p - 1)
 
 /* use hand-made boolean. */
 typedef char bool;
@@ -109,6 +113,7 @@ static size_t list_size(list *);
 static int list_is_exist(list *);
 static void list_swap(list_elem **, list_elem **);
 
+/* bin has 128 elements of free list. */
 static list * bin;
 
 /*
@@ -256,10 +261,19 @@ void * mm_malloc(size_t size)
   return NULL;
 }
 
-header * mm_expand_heap(size_t num)
+bool mm_expand_heap(size_t num)
 {
+  if (num < MIN_HEAP_INC)
+    num = MIN_HEAP_INC;
 
-  return NULL;
+  void * ptr = mem_sbrk(num * ALIGN(sizeof(header)));
+  if (ptr == (void *) -1)
+    return false;
+  else {
+    ((header *) ptr)->size = num;
+    mm_free((char *) ptr + ALIGN(sizeof(header)));
+    return true;
+  }
 }
 
 /*
@@ -267,11 +281,10 @@ header * mm_expand_heap(size_t num)
  */
 void mm_free(void * ptr)
 {
-
-
-  /* DON't MODIFY THIS STAGE AND LEAVE IT AS IT WAS */
   if (gl_ranges)
     remove_range(gl_ranges, ptr);
+
+
 }
 
 /*
