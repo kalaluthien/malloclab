@@ -39,7 +39,7 @@ team_t team = {
 static range_t ** gl_ranges;
 
 /* length of all bins */
-#define BIN_SIZE 128
+#define BIN_SIZE 1<<7
 
 /* single word (4) or double word (8) alignment */
 #define ALIGNMENT 8
@@ -52,6 +52,7 @@ static range_t ** gl_ranges;
 /* find the offset of member of a struct. */
 #define OFFSET_OF(type, member) ((size_t) &((type *) 0)->member)
 
+/* take values for header. */
 #define GET_SIZE(h) (h->size & ~0x7)
 
 #define GET_ALLOC(h) (h->size & 0x3)
@@ -59,7 +60,7 @@ static range_t ** gl_ranges;
 #define GET_HEADER(p) ((header *) p - 1)
 
 /* use hand-made boolean. */
-typedef char bool;
+typedef signed char bool;
 #define true 1
 #define false 0
 
@@ -73,7 +74,6 @@ typedef struct list_elem {
 typedef struct {
   list_elem head;
   list_elem tail;
-  list_elem elem;
 } list;
 
 /* Block header. */
@@ -83,7 +83,7 @@ typedef struct {
 } header;
 
 /*
- * macro function which used to get ptr to STRUCT from its LIST_ELEM.
+ * macro functions which are used to get ptr to STRUCT from its LIST_ELEM.
  * using example:
  *   struct block * new_block;
  *   new_block = list_get(old_block->member, struct block, member);
@@ -91,6 +91,7 @@ typedef struct {
 #define list_item(list_elem, type, member) \
   ((type *) ((char *) &(list_elem)->next - OFFSET_OF(type, member.next)))
 
+/* check the position of elem. */
 #define list_is_head(list_elem) \
   ((bool) (list_elem != NULL && list_elem->prev == NULL && elem->next != NULL))
 
@@ -102,16 +103,17 @@ typedef struct {
 
 static void list_init(list *);
 static list_elem * list_first(list *);
-static list_elem * list_next(list_elem *);
-static list_elem * list_prev(list_elem *);
 static list_elem * list_last(list *);
 static void list_insert(list_elem *, list_elem *);
 static void list_add(list *, list_elem *);
 static list_elem * list_delete(list_elem *);
 static list_elem * list_get(list *);
 static size_t list_size(list *);
-static int list_is_exist(list *);
+static bool list_empty(list *);
 static void list_swap(list_elem **, list_elem **);
+
+static int size_to_index(size_t);
+static bool expand_heap(size_t);
 
 /* bin has 128 elements of free list. */
 static list * bin;
@@ -157,22 +159,6 @@ static list_elem * list_first(list * list)
     return list->head.next;
 }
 
-static list_elem * list_next(list_elem * elem)
-{
-  if (list_is_tail(elem))
-    return NULL;
-  else
-    return elem->next;
-}
-
-static list_elem * list_prev(list_elem * elem)
-{
-  if(list_is_head(elem))
-    return NULL;
-  else
-    return elem->prev;
-}
-
 static list_elem * list_last(list * list)
 {
   if (list == NULL)
@@ -207,16 +193,34 @@ static list_elem * list_get(list * list)
   return NULL;
 }
 
-static size_t list_size(list * list)
+static bool list_empty(list * list)
 {
-
-  return 0;
+  if (list->head.next == &list->tail)
+    return true;
+  else
+    return false;
 }
 
 static void list_swap
   (list_elem ** left_elem, list_elem ** right_elem)
 {
 
+}
+
+static int bin_size_to_index(size_t bytes)
+{
+  int i;
+  unsigned int words = (bytes - 1) / ALIGNMENT + 1;
+  if (words <= 2)
+    return 0;
+  else if (words == 3)
+    return 1;
+  else if (words == 4)
+    return 2;
+  else {
+    for (i = 1<<3; words > i; i << 1) ;
+    return i;
+  }
 }
 
 /*
@@ -236,6 +240,10 @@ int mm_init(range_t **ranges)
       list_init(bin + i);
   }
 
+  /* create the initial empty heap. */
+  if (!mm_expand_heap(MIN_SIZE_INC))
+    return NULL;
+
   /* DON't MODIFY THIS STAGE AND LEAVE IT AS IT WAS */
   gl_ranges = ranges;
 
@@ -246,22 +254,33 @@ int mm_init(range_t **ranges)
  * mm_malloc - Allocate a block by incrementing the brk pointer.
  *     Always allocate a block whose size is a multiple of the alignment.
  */
-void * mm_malloc(size_t size)
+void * mm_malloc(size_t payload)
 {
-/*  int newsize = ALIGN(sizeof(header)) + ALIGN(nbytes) + ALIGN(sizeof(size_t));
-  void * ptr = mem_sbrk(newsize);
-  if (ptr == (void *)-1)
-    return NULL;
-  else {
-    ((header *) ptr)->size = ALIGN(size);
-    ((header *) ptr)->size |= 0x1;
-    return (void *) ((char *) ptr + HEADER_SIZE);
-  }*/
+  /*
+  int aligned_size = ALIGN(sizeof(header) + payload) + ALIGN(sizeof(size_t));
+  ((header *) ptr)->size = ALIGN(size);
+  ((header *) ptr)->size |= 0x1;
+  return (void *) ((char *) ptr + sizeof(header));
+  */
+  size_t words
+    = ALIGN(sizeof(header) + payload)
+    + ALIGN(sizeof(size_t));
+  words /= ALIGNMENT;
+
+  int index;
+  for (index = size_to_index(words); index < BIN_SIZE; index++)
+  {
+    if (!list_empty(bin[index]))
+    {
+      // TODO
+      break;
+    }
+  }
 
   return NULL;
 }
 
-bool mm_expand_heap(size_t num)
+static bool expand_heap(size_t num)
 {
   if (num < MIN_HEAP_INC)
     num = MIN_HEAP_INC;
