@@ -53,9 +53,9 @@ static range_t ** gl_ranges;
 #define OFFSET_OF(type, member) ((size_t) &((type *) 0)->member)
 
 /* take values for header. */
-#define GET_SIZE(h) (h->size & ~0x7)
+#define GET_SIZE(h) (((header *) h)->size & ~0x7)
 
-#define GET_ALLOC(h) (h->size & 0x3)
+#define GET_ALLOC(h) (((header *) h)->size & 0x3)
 
 #define GET_HEADER(p) ((header *) p - 1)
 
@@ -106,11 +106,12 @@ static list_elem * list_first(list *);
 static list_elem * list_last(list *);
 static void list_insert(list_elem *, list_elem *);
 static void list_add(list *, list_elem *);
-static list_elem * list_delete(list_elem *);
+static list_elem * list_remove(list_elem *);
 static list_elem * list_get(list *);
 static size_t list_size(list *);
 static bool list_empty(list *);
 static void list_swap(list_elem **, list_elem **);
+static bool list_compare(lsit elem *, list elem *);
 
 static int size_to_index(size_t);
 static bool expand_heap(size_t);
@@ -208,9 +209,28 @@ static list_elem * list_get(list * list)
   return list_front;
 }
 
+static size_t list_size(list * list)
+{
+  size_t size = 0;
+  list_elem * e;
+
+  for (e = list_first(list); e != list_last(list); e = e->next)
+    size++;
+  return size;
+}
+
 static bool list_empty(list * list)
 {
   return (bool) (list->head.next == &list->tail)
+}
+
+static bool list_compare
+  (list_elem * e_left, list_elem * e_right)
+{
+  header * h_left = list_item(e_left, header, elem);
+  header * h_right = list_item(e_right, header, elem);
+
+  return (bool) (h_left->size < h_right->size);
 }
 
 static void list_swap
@@ -221,7 +241,7 @@ static void list_swap
   *right_elem = temp_elem;
 }
 
-static int bin_size_to_index(size_t bytes)
+static int size_to_index(size_t bytes)
 {
   int i;
   unsigned int words = (bytes - 1) / ALIGNMENT + 1;
@@ -276,22 +296,29 @@ void * mm_malloc(size_t payload)
   ((header *) ptr)->size |= 0x1;
   return (void *) ((char *) ptr + sizeof(header));
   */
-  size_t words
+  size_t bytes
     = ALIGN(sizeof(header) + payload)
     + ALIGN(sizeof(size_t));
-  words /= ALIGNMENT;
 
   int index;
-  for (index = size_to_index(words); index < BIN_SIZE; index++)
+  for (index = size_to_index(bytes); index < BIN_SIZE; index++)
   {
     if (!list_empty(bin[index]))
     {
-      // TODO
-      break;
+      list_elem * e;
+      for (e = list_get(bin[index]); e != list_last(bin[index]); e = e->next)
+      {
+
+      }
+      return NULL;
     }
   }
 
-  return NULL;
+  if (index == BIN_SIZE)
+    if (!expand_heap(payload))
+      return NULL;
+    else
+      return mm_malloc(payload);
 }
 
 static bool expand_heap(size_t num)
@@ -317,7 +344,20 @@ void mm_free(void * ptr)
   if (gl_ranges)
     remove_range(gl_ranges, ptr);
 
+  header * free_ptr = (header *) ptr - 1;
+  free_ptr = coalesce(free_ptr);
 
+  int index = size_to_index(GET_SIZE(free_ptr));
+  list_add(bin[index], free_ptr->elem);
+}
+
+static header * coalesce(header * ptr)
+{
+  header * coalesced_ptr = ptr;
+
+  // TODO
+
+  return coalesced_ptr;
 }
 
 /*
