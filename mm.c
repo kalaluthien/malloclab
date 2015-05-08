@@ -168,43 +168,57 @@ static list_elem * list_last(list * list)
 }
 
 static void list_insert
-  (list_elem * left_elem, list_elem * elem)
+  (list_elem * old_elem, list_elem * elem)
 {
+  if (!list_is_body(old_elem) && !list_is_tail(old_elem))
+    return;
+  if (elem == NULL)
+    return;
 
-
+  elem->prev = old_elem->prev;
+  elem->next = old_elem;
+  old_elem->prev->next = elem;
+  old_elem->prev = elem;
 }
 
 static void list_add(list * list, list_elem * elem)
 {
+  list_elem * e;
+  for (e = list_first(list); e != list_last(list); e = e->next)
+    if (list_compare(elem, e))
+      break;
 
-
-
+  list_insert(e, elem);
 }
 
 static list_elem * list_remove(list_elem * elem)
 {
+  if (!list_is_body(elem))
+    return NULL;
 
-  return elem;
+  elem->prev->next = elem->next;
+  elem->next->prev = elem->prev;
+  return elem->next;
 }
 
 static list_elem * list_get(list * list)
 {
-
-  return NULL;
+  list_elem * list_front = list_first(list);
+  list_remove(list_front);
+  return list_front;
 }
 
 static bool list_empty(list * list)
 {
-  if (list->head.next == &list->tail)
-    return true;
-  else
-    return false;
+  return (bool) (list->head.next == &list->tail)
 }
 
 static void list_swap
   (list_elem ** left_elem, list_elem ** right_elem)
 {
-
+  list_elem * temp_elem; = *left_elem;
+  *left_elem = *right_elem;
+  *right_elem = temp_elem;
 }
 
 static int bin_size_to_index(size_t bytes)
