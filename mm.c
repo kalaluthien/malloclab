@@ -38,7 +38,7 @@ team_t team = {
 /* DON'T MODIFY THIS VALUE AND LEAVE IT AS IT WAS */
 static range_t ** gl_ranges;
 
-/* length of all bins */
+/* length of all free_bins */
 #define BIN_SIZE 1<<7
 
 /* single word (4) or double word (8) alignment */
@@ -48,6 +48,9 @@ static range_t ** gl_ranges;
 
 /* rounds up to the nearest multiple of ALIGNMENT */
 #define ALIGN(size) (((size) + (ALIGNMENT-1)) & ~0x7)
+
+/* minimum malloc block size. */
+#define MIN_MALLOC (ALIGN(sizeof(header) + sizeof(size_t)))
 
 /* find the offset of member of a struct. */
 #define OFFSET_OF(type, member) ((size_t) &((type *) 0)->member)
@@ -116,8 +119,11 @@ static bool list_compare(lsit elem *, list elem *);
 static int size_to_index(size_t);
 static bool expand_heap(size_t);
 
-/* bin has 128 elements of free list. */
-static list * bin;
+/* array of free lists. */
+static list * free_bin;
+
+/* alloc list. */
+static list alloc_list;
 
 /*
  * remove_range - manipulate range lists
@@ -171,9 +177,7 @@ static list_elem * list_last(list * list)
 static void list_insert
   (list_elem * old_elem, list_elem * elem)
 {
-  if (!list_is_body(old_elem) && !list_is_tail(old_elem))
-    return;
-  if (elem == NULL)
+  if (list_is_head(old_elem) || elem == NULL)
     return;
 
   elem->prev = old_elem->prev;
@@ -262,20 +266,23 @@ static int size_to_index(size_t bytes)
  */
 int mm_init(range_t **ranges)
 {
-  /* initialize bin */
-  int i, size = ALIGN(BIN_SIZE * sizeof(list));
+  /* initialize free_bin of free lists. */
+  int i, size = ALIGN(free_bin_SIZE * sizeof(list));
   void * allocated_area = mem_sbrk(size);
 
   if (allocated_area == (void *) -1)
-    bin = NULL;
+    free_bin = NULL;
   else {
-    bin = (list *) allocated_area;
+    free_bin = (list *) allocated_area;
     for (i = 0; i < BIN_SIZE; i++)
-      list_init(bin + i);
+      list_init(free_bin + i);
   }
 
+  /* initialize alloc list. */
+  list_init(&alloc_list);
+
   /* create the initial empty heap. */
-  if (!mm_expand_heap(MIN_SIZE_INC))
+  if (expand_heap(MIN_HEAP_INC))
     return NULL;
 
   /* DON't MODIFY THIS STAGE AND LEAVE IT AS IT WAS */
@@ -291,29 +298,26 @@ int mm_init(range_t **ranges)
 void * mm_malloc(size_t payload)
 {
   /*
-  int aligned_size = ALIGN(sizeof(header) + payload) + ALIGN(sizeof(size_t));
   ((header *) ptr)->size = ALIGN(size);
   ((header *) ptr)->size |= 0x1;
-  return (void *) ((char *) ptr + sizeof(header));
   */
-  size_t bytes
-    = ALIGN(sizeof(header) + payload)
-    + ALIGN(sizeof(size_t));
+  void * ret_ptr;
 
-  int index;
-  for (index = size_to_index(bytes); index < BIN_SIZE; index++)
-  {
-    if (!list_empty(bin[index]))
-    {
-      list_elem * e;
-      for (e = list_get(bin[index]); e != list_last(bin[index]); e = e->next)
-      {
+  /* set bytes for allocate, considering minimum value. */
+  size_t bytes = ALIGN(sizeof(header) + payload);
+  if (bytes < MIN_MALLOC)
+    bytes = MIN_MALLOC;
 
-      }
-      return NULL;
-    }
+  /* search best fit block from small size class. */
+  int index = size_to_index(bytes);
+  for (; index < BIN_SIZE; index++)
+  { // for lists in free_bin.
+    if (!list_empty(&free_bin[index]))
+      if ((ret_ptr = get_fit_block(&free_bin[index], bytes)) != NULL)
+        return ret_ptr;
   }
 
+  /* get more space when failed to allocate proper block. */
   if (index == BIN_SIZE)
     if (!expand_heap(payload))
       return NULL;
@@ -321,11 +325,43 @@ void * mm_malloc(size_t payload)
       return mm_malloc(payload);
 }
 
-static bool expand_heap(size_t num)
+static void * get_fit_block(list * list, size_t bytes)
 {
-  if (num < MIN_HEAP_INC)
+  list_elem * e = list_get(list);
+  for (; e != &list->tail; e = e->next)
+  { // for list_elems.
+    header * e_block = list_item(e, header, elem);
+
+    /* do not match. */
+    if (e_block->size < bytes)
+      continue;
+
+    /* match. */
+    else if (e_block->size > bytes)
+      split_block(e_block, bytes);
+
+    list_remove(e);
+    list_add(&alloc_list, e);
+    return (void *) (e_block + 1);
+  }
+  /* do not match at all. */
+  return NULL;
+}
+
+static void split_block(header * block, size_t bytes)
+{
+
+  // TODO
+
+}
+
+static bool expand_heap(size_t bytes)
+{
+  /* make bytes larger than or equal to minimum value. */
+  if (bytes < MIN_HEAP_INC)
     num = MIN_HEAP_INC;
 
+  /* expand heap. */
   void * ptr = mem_sbrk(num * ALIGN(sizeof(header)));
   if (ptr == (void *) -1)
     return false;
@@ -345,13 +381,14 @@ void mm_free(void * ptr)
     remove_range(gl_ranges, ptr);
 
   header * free_ptr = (header *) ptr - 1;
-  free_ptr = coalesce(free_ptr);
+  list_remove(&free_ptr->elem)
+  free_ptr = coalesce_block(free_ptr);
 
   int index = size_to_index(GET_SIZE(free_ptr));
-  list_add(bin[index], free_ptr->elem);
+  list_add(&free_bin[index], &free_ptr->elem);
 }
 
-static header * coalesce(header * ptr)
+static header * coalesce_block(header * ptr)
 {
   header * coalesced_ptr = ptr;
 
@@ -373,6 +410,10 @@ void * mm_realloc(void * ptr, size_t t)
  */
 void mm_exit(void)
 {
-
+  list_elem * e = list_first(&alloc_list);
+  while (list_empty(&alloc_list))
+  {
+    e = e->next;
+    mm_free(e->prev + 1);
+  }
 }
-
