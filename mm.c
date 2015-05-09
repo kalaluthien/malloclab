@@ -111,13 +111,15 @@ static void list_insert(list_elem *, list_elem *);
 static void list_add(list *, list_elem *);
 static list_elem * list_remove(list_elem *);
 static list_elem * list_get(list *);
-static size_t list_size(list *);
+//static size_t list_size(list *);
 static bool list_empty(list *);
-static void list_swap(list_elem **, list_elem **);
-static bool list_compare(lsit elem *, list elem *);
-
+//static void list_swap(list_elem **, list_elem **);
+static bool list_compare(list_elem *, list_elem *);
 static int size_to_index(size_t);
+static void * get_fit_block(list *, size_t);
+static void split_block(header *, size_t);
 static bool expand_heap(size_t);
+static header * coalesce_block(header *);
 
 /* array of free lists. */
 static list * free_bin;
@@ -212,7 +214,7 @@ static list_elem * list_get(list * list)
   list_remove(list_front);
   return list_front;
 }
-
+/*
 static size_t list_size(list * list)
 {
   size_t size = 0;
@@ -222,10 +224,10 @@ static size_t list_size(list * list)
     size++;
   return size;
 }
-
+*/
 static bool list_empty(list * list)
 {
-  return (bool) (list->head.next == &list->tail)
+  return (bool) (list->head.next == &list->tail);
 }
 
 static bool list_compare
@@ -236,15 +238,15 @@ static bool list_compare
 
   return (bool) (h_left->size < h_right->size);
 }
-
+/*
 static void list_swap
   (list_elem ** left_elem, list_elem ** right_elem)
 {
-  list_elem * temp_elem; = *left_elem;
+  list_elem * temp_elem = *left_elem;
   *left_elem = *right_elem;
   *right_elem = temp_elem;
 }
-
+*/
 static int size_to_index(size_t bytes)
 {
   int i;
@@ -256,7 +258,7 @@ static int size_to_index(size_t bytes)
   else if (words == 4)
     return 2;
   else {
-    for (i = 1<<3; words > i; i << 1) ;
+    for (i = 1<<3; i < words; i << 1) ;
     return i;
   }
 }
@@ -267,7 +269,7 @@ static int size_to_index(size_t bytes)
 int mm_init(range_t **ranges)
 {
   /* initialize free_bin of free lists. */
-  int i, size = ALIGN(free_bin_SIZE * sizeof(list));
+  int i, size = ALIGN(BIN_SIZE * sizeof(list));
   void * allocated_area = mem_sbrk(size);
 
   if (allocated_area == (void *) -1)
@@ -283,7 +285,7 @@ int mm_init(range_t **ranges)
 
   /* create the initial empty heap. */
   if (expand_heap(MIN_HEAP_INC))
-    return NULL;
+    return -1;
 
   /* DON't MODIFY THIS STAGE AND LEAVE IT AS IT WAS */
   gl_ranges = ranges;
@@ -318,11 +320,10 @@ void * mm_malloc(size_t payload)
   }
 
   /* get more space when failed to allocate proper block. */
-  if (index == BIN_SIZE)
-    if (!expand_heap(payload))
-      return NULL;
-    else
-      return mm_malloc(payload);
+  if (!expand_heap(payload))
+    return NULL;
+  else
+    return mm_malloc(payload);
 }
 
 static void * get_fit_block(list * list, size_t bytes)
@@ -359,14 +360,14 @@ static bool expand_heap(size_t bytes)
 {
   /* make bytes larger than or equal to minimum value. */
   if (bytes < MIN_HEAP_INC)
-    num = MIN_HEAP_INC;
+    bytes = MIN_HEAP_INC;
 
   /* expand heap. */
-  void * ptr = mem_sbrk(num * ALIGN(sizeof(header)));
+  void * ptr = mem_sbrk(bytes * ALIGN(sizeof(header)));
   if (ptr == (void *) -1)
     return false;
   else {
-    ((header *) ptr)->size = num;
+    ((header *) ptr)->size = bytes;
     mm_free((char *) ptr + ALIGN(sizeof(header)));
     return true;
   }
@@ -381,20 +382,20 @@ void mm_free(void * ptr)
     remove_range(gl_ranges, ptr);
 
   header * free_ptr = (header *) ptr - 1;
-  list_remove(&free_ptr->elem)
+  list_remove(&free_ptr->elem);
   free_ptr = coalesce_block(free_ptr);
 
   int index = size_to_index(GET_SIZE(free_ptr));
   list_add(&free_bin[index], &free_ptr->elem);
 }
 
-static header * coalesce_block(header * ptr)
+static header * coalesce_block(header * block)
 {
-  header * coalesced_ptr = ptr;
+  header * coalesced_block = block;
 
   // TODO
 
-  return coalesced_ptr;
+  return coalesced_block;
 }
 
 /*
