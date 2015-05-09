@@ -39,12 +39,12 @@ team_t team = {
 static range_t ** gl_ranges;
 
 /* length of all free_bins */
-#define BIN_SIZE 1<<7
+#define BIN_SIZE 128
 
 /* single word (4) or double word (8) alignment */
 #define ALIGNMENT 8
 
-#define MIN_HEAP_INC 1<<10
+#define MIN_HEAP_INC 1024
 
 /* rounds up to the nearest multiple of ALIGNMENT */
 #define ALIGN(size) (((size) + (ALIGNMENT-1)) & ~0x7)
@@ -96,13 +96,13 @@ typedef struct {
 
 /* check the position of elem. */
 #define list_is_head(list_elem) \
-  ((bool) (list_elem != NULL && list_elem->prev == NULL && elem->next != NULL))
+  ((bool) (list_elem != NULL && list_elem->prev == NULL && list_elem->next != NULL))
 
 #define list_is_body(list_elem) \
-  ((bool) (list_elem != NULL && list_elem->prev != NULL && elem->next != NULL))
+  ((bool) (list_elem != NULL && list_elem->prev != NULL && list_elem->next != NULL))
 
 #define list_is_tail(list_elem) \
-  ((bool) (list_elem != NULL && list_elem->prev != NULL && elem->next == NULL))
+  ((bool) (list_elem != NULL && list_elem->prev != NULL && list_elem->next == NULL))
 
 static void list_init(list *);
 static list_elem * list_first(list *);
@@ -126,6 +126,28 @@ static list * free_bin;
 
 /* alloc list. */
 static list alloc_list;
+
+/* for debugging. */
+static int debug_count;
+static bool debug_flag = false;
+
+static void deb(void)
+{
+  if (debug_flag)
+    printf("==== Debug Point : (%d)\n", ++debug_count);
+}
+
+static void prt(const char * str, unsigned int num)
+{
+  if (debug_flag)
+    printf("==== %s : %d\n", str, num);
+}
+
+static void msg(const char * str)
+{
+  if (debug_flag)
+    printf("==== %s : (%d)\n", str, ++debug_count);
+}
 
 /*
  * remove_range - manipulate range lists
@@ -247,10 +269,34 @@ static void list_swap
   *right_elem = temp_elem;
 }
 */
+static void list_print(list * list)
+{
+  int i;
+  list_elem * e;
+  for (e = list_first(list), i = 1; ; e = e->next, i++)
+    if (list_is_head(e))
+      printf("|h|");
+    else if (list_is_body(e))
+      printf("<->|%d|", i);
+    else
+    {
+      printf("<->|t|\n");
+      break;
+    }
+}
+
+static void bin_print()
+{
+
+  // TODO
+
+}
+
 static int size_to_index(size_t bytes)
 {
   int i;
   unsigned int words = (bytes - 1) / ALIGNMENT + 1;
+  prt("stoi_words", words);
   if (words <= 2)
     return 0;
   else if (words == 3)
@@ -258,7 +304,7 @@ static int size_to_index(size_t bytes)
   else if (words == 4)
     return 2;
   else {
-    for (i = 1<<3; i < words; i << 1) ;
+    for (i = 8; i < words; i = i << 1) ;
     return i;
   }
 }
@@ -268,28 +314,38 @@ static int size_to_index(size_t bytes)
  */
 int mm_init(range_t **ranges)
 {
+  debug_flag = true;
+  printf("\n\n");
+  msg("mm_init start...");
   /* initialize free_bin of free lists. */
-  int i, size = ALIGN(BIN_SIZE * sizeof(list));
+  size_t size = ALIGN(BIN_SIZE * sizeof(list));
   void * allocated_area = mem_sbrk(size);
 
+  msg("mm_init bin...");
   if (allocated_area == (void *) -1)
     free_bin = NULL;
   else {
     free_bin = (list *) allocated_area;
+
+    int i;
     for (i = 0; i < BIN_SIZE; i++)
       list_init(free_bin + i);
   }
 
+  msg("mm_init alloc list...");
   /* initialize alloc list. */
   list_init(&alloc_list);
 
+  msg("mm_init expand heap...");
   /* create the initial empty heap. */
-  if (expand_heap(MIN_HEAP_INC))
+  if (!expand_heap(MIN_HEAP_INC))
     return -1;
 
   /* DON't MODIFY THIS STAGE AND LEAVE IT AS IT WAS */
   gl_ranges = ranges;
 
+  msg("mm_init over...");
+  debug_flag = false;
   return 0;
 }
 
@@ -329,7 +385,7 @@ void * mm_malloc(size_t payload)
 static void * get_fit_block(list * list, size_t bytes)
 {
   list_elem * e = list_get(list);
-  for (; e != &list->tail; e = e->next)
+  for (; !list_is_tail(e); e = e->next)
   { // for list_elems.
     header * e_block = list_item(e, header, elem);
 
@@ -358,17 +414,20 @@ static void split_block(header * block, size_t bytes)
 
 static bool expand_heap(size_t bytes)
 {
+  msg("expand_heap setting...");
   /* make bytes larger than or equal to minimum value. */
   if (bytes < MIN_HEAP_INC)
     bytes = MIN_HEAP_INC;
 
   /* expand heap. */
-  void * ptr = mem_sbrk(bytes * ALIGN(sizeof(header)));
+  void * ptr = mem_sbrk(ALIGN(bytes));
+  msg("mem_sbrk done...");
   if (ptr == (void *) -1)
     return false;
   else {
     ((header *) ptr)->size = bytes;
     mm_free((char *) ptr + ALIGN(sizeof(header)));
+    msg("expand_heap added new block to free list");
     return true;
   }
 }
@@ -381,12 +440,18 @@ void mm_free(void * ptr)
   if (gl_ranges)
     remove_range(gl_ranges, ptr);
 
+  msg("mm_free setting...");
   header * free_ptr = (header *) ptr - 1;
+  msg("mm_free got header...");
   list_remove(&free_ptr->elem);
+  msg("mm_free removed block from alloc_list...");
   free_ptr = coalesce_block(free_ptr);
+  msg("mm_free coalescing...");
 
   int index = size_to_index(GET_SIZE(free_ptr));
+  msg("mm_free setting to add block to list...");
   list_add(&free_bin[index], &free_ptr->elem);
+  msg("mm_free added block to free list...");
 }
 
 static header * coalesce_block(header * block)
@@ -412,7 +477,7 @@ void * mm_realloc(void * ptr, size_t t)
 void mm_exit(void)
 {
   list_elem * e = list_first(&alloc_list);
-  while (list_empty(&alloc_list))
+  while (!list_is_tail(e))
   {
     e = e->next;
     mm_free(e->prev + 1);
