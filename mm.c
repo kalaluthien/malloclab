@@ -3,9 +3,6 @@
  * the brk pointer.  A block is pure payload. There are no headers or
  * footers.  Blocks are never coalesced or reused. Realloc is
  * implemented directly using mm_malloc and mm_free.
- *
- * NOTE TO STUDENTS: Replace this header comment with your own header
- * comment that gives a high level description of your solution.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,7 +35,7 @@ static range_t ** gl_ranges;
 
 /* default sizes for bin, expanding heap. */
 #define BIN_SIZE 128
-#define MIN_HEAP_INC 1024
+#define MIN_HEAP_INC 5096
 
 /* single word (4) or double word (8) alignment */
 #define ALIGNMENT 8
@@ -47,7 +44,7 @@ static range_t ** gl_ranges;
 #define ALIGN(size) (((size) + (ALIGNMENT-1)) & ~0x7)
 
 /* minimum malloc block size. */
-#define MIN_MALLOC (ALIGN(sizeof(header) + sizeof(size_t)))
+#define MIN_MALLOC (ALIGN(sizeof(header) + ALIGN(sizeof(size_t))))
 
 /* find the offset of member of a struct. */
 #define OFFSET_OF(type, member) ((size_t) &((type *) 0)->member)
@@ -60,12 +57,27 @@ static range_t ** gl_ranges;
 #define GET_FOOTER(h) \
   ((size_t *) (((char *) h) + GET_SIZE(h) - ALIGN(sizeof(size_t))))
 
-#define GET_NEXT(h) ((header *) ((char *) block + GET_SIZE(block)))
+#define GET_SIZE_FOOTER(h) (*GET_FOOTER(h) & ~0x7)
 
-#define GET_HEADER(p) ((header *) p - 1)
+#define GET_ALLOC_FOOTER(h) (*GET_FOOTER(h) & 0x3)
 
+#define GET_NEXT(h) ((header *) ((char *) h + GET_SIZE(h)))
+
+#define GET_PREV(h) \
+  ((header *) ((char *) h - \
+  (*((size_t *) ((char *) h - ALIGN(sizeof(size_t)))) & ~0x7)))
+
+#define GET_HEADER(p) ((header *) ((char *) p - ALIGN(sizeof(header))))
+
+#define GET_PAYLOAD(p) ((void *) ((char *) p + ALIGN(sizeof(header))))
+
+#define NONE 0x0
 #define ALLOCATED 0x1
 #define ADJUST_ALLOCATED 0x2
+
+#define IS_ALLOCATED(h) ((GET_ALLOC(h) & ALLOCATED) ? true : false)
+#define IS_ADJUST_ALLOCATED(h) \
+  ((GET_ALLOC(h) & ADJUST_ALLOCATED) ? true : false)
 
 /* use hand-made boolean. */
 typedef char bool;
@@ -92,9 +104,9 @@ typedef struct {
 
 /*
  * macro functions which are used to get ptr to STRUCT from its LIST_ELEM.
- * using example:
+ * using example for :
  *   struct block * new_block;
- *   new_block = list_get(old_block->member, struct block, member);
+ *   new_block = list_get(&old_block->m_name, struct block, m_name);
  */
 #define list_item(list_elem, type, member) \
   ((type *) ((char *) &(list_elem)->next - OFFSET_OF(type, member.next)))
@@ -118,8 +130,11 @@ static list_elem * list_remove(list_elem *);
 static list_elem * list_get(list *);
 static bool list_empty(list *);
 static bool list_compare(list_elem *, list_elem *);
+
+/* private functions. */
 static int size_to_index(size_t);
-static void * get_fit_block(list *, size_t);
+static void set_free_state(header *);
+static header * get_fit_block(list *, size_t);
 static header * split_block(header *, size_t);
 static bool expand_heap(size_t);
 static header * coalesce_block(header *);
@@ -140,10 +155,16 @@ static void deb(void)
     printf("==== Debug Point : (%d)\n", ++debug_count);
 }
 
-static void prt(const char * str, unsigned int num)
+static void prt(const char * str, long num)
 {
   if (debug_flag)
-    printf("==== %s : %d\n", str, num);
+    printf("==== %s : %ld\n", str, num);
+}
+
+static void prtp(const char * str, void * ptr)
+{
+  if (debug_flag)
+    printf("==== %s : %p\n", str, ptr);
 }
 
 static void msg(const char * str)
@@ -258,14 +279,14 @@ static void list_print(list * list)
 {
   int i;
   list_elem * e;
-  for (e = list_first(list), i = 1; ; e = e->next, i++)
+  for (e = &list->head, i = 1; ; e = e->next)
     if (list_is_head(e))
       printf("|h|");
     else if (list_is_body(e))
-      printf("<->|%d|", i);
+      printf("-|%d|", i++);
     else
     {
-      printf("<->|t|\n");
+      printf("-|t|\n");
       break;
     }
 }
@@ -277,25 +298,41 @@ static int size_to_index(size_t bytes)
     return 0;
   else if (words <= 64)
     return words - 2;
-  else {
+  else
+  {
     int i = 1;
-    for (words -= 64; i * ALIGNMENT < words; i++) ;
+    for (words -= 64; 1<<(i+2) < words; i++) ;
     return i + 62;
   }
+}
+
+static void set_free_state(header * block)
+{
+  block->size >>= 1;
+  block->size <<= 1;
 }
 
 /*
  * mm_init - initialize the malloc package.
  */
-int mm_init(range_t **ranges)
+int mm_init(range_t ** ranges)
 {
-  /* initialize free_bin of free lists. */
-  size_t size = ALIGN(BIN_SIZE * sizeof(list));
+  /* initialize free_bin of free lists and allocate space for dummy block. */
+  size_t size
+    = ALIGN(BIN_SIZE * sizeof(list))                  // bin[BIN_SIZE].
+    + ALIGN(sizeof(header)) + ALIGN(sizeof(size_t))   // dummy head block.
+    + ALIGN(sizeof(header));                          // dummy tail block.
   void * allocated_area = mem_sbrk(size);
+
+  // FIXME
+  debug_flag = true;
+  msg("mm_init called");
+  debug_flag = false;
 
   if (allocated_area == (void *) -1)
     free_bin = NULL;
-  else {
+  else
+  {
     free_bin = (list *) allocated_area;
 
     int i;
@@ -303,12 +340,18 @@ int mm_init(range_t **ranges)
       list_init(free_bin + i);
   }
 
+  /* initialize dummy blocks. */
+  header * dummy_head
+    = (header *) ((char *) allocated_area + ALIGN(BIN_SIZE * sizeof(list)));
+  dummy_head->size = MIN_MALLOC | ALLOCATED;
+  *GET_FOOTER(dummy_head) = MIN_MALLOC | ALLOCATED;
+
+  header * dummy_tail
+    = (header *) ((char *) allocated_area + size - ALIGN(sizeof(header)));
+  dummy_tail->size = ALIGN(sizeof(size_t)) | ADJUST_ALLOCATED | ALLOCATED;
+
   /* initialize alloc list. */
   list_init(&alloc_list);
-
-  /* create the initial empty heap. */
-  if (!expand_heap(MIN_HEAP_INC))
-    return -1;
 
   /* DON't MODIFY THIS STAGE AND LEAVE IT AS IT WAS */
   gl_ranges = ranges;
@@ -321,12 +364,19 @@ int mm_init(range_t **ranges)
  */
 void * mm_malloc(size_t payload)
 {
-  void * ret_ptr;
+  header * ret_block;
+
+  // FIXME
+  debug_flag = true;
+  msg("malloc called");
+  prt("malloc: payload", payload);
 
   /* set bytes for allocate, considering minimum value. */
-  size_t bytes = ALIGN(sizeof(header) + payload);
+  size_t bytes = ALIGN(sizeof(header)) + ALIGN(payload);
   if (bytes < MIN_MALLOC)
     bytes = MIN_MALLOC;
+
+  prt("malloc: aligned bytes", bytes);
 
   /* search best fit block from small size class. */
   int index = size_to_index(bytes);
@@ -334,22 +384,39 @@ void * mm_malloc(size_t payload)
   {
     /* search best-fit free block. */
     if (!list_empty(&free_bin[index]))
-      if ((ret_ptr = get_fit_block(&free_bin[index], bytes)) != NULL)
-        return ret_ptr;
+    {
+      ret_block = get_fit_block(&free_bin[index], bytes);
+      if (ret_block != NULL)
+      {
+        /* set allocate states. */
+        ret_block->size |= ALLOCATED;
+        GET_NEXT(ret_block)->size |= ADJUST_ALLOCATED;
+
+        prt("malloc: found free block, index", index);
+        prtp("malloc: pointer to ret_block", ret_block);
+        debug_flag = false;
+
+        return GET_PAYLOAD(ret_block);
+      }
+    }
 
     /* get more space when failed to allocate proper block. */
     if (++index == BIN_SIZE)
-      if (!expand_heap(payload))
+    {
+      msg("malloc calls expand_heap");
+      if (!expand_heap(bytes))
         return NULL;
       else
         index = size_to_index(bytes);
+    }
   }
 }
 
 /*
- * get_fit_block - Search a best fit block by check all blocks in list.
+ * get_fit_block - Search a best fit block by check all blocks in list
+ *  and return it.
  */
-static void * get_fit_block(list * list, size_t bytes)
+static header * get_fit_block(list * list, size_t bytes)
 {
   list_elem * e = list_get(list);
   for (; !list_is_tail(e); e = e->next)
@@ -364,12 +431,13 @@ static void * get_fit_block(list * list, size_t bytes)
         list_remove(e);
         list_add(&alloc_list, e);
       }
-      else
+      else  // e_block->size > bytes
       {
+        msg("malloc calls split_block");
         e_block = split_block(e_block, bytes);
         list_add(&alloc_list, &e_block->elem);
       }
-      return (void *) (e_block + 1);
+      return e_block;
     }
   }
   /* do not match at all. */
@@ -384,16 +452,15 @@ static header * split_block(header * block, size_t bytes)
 {
   /* handle first block which remains in the free list. */
   block->size -= bytes;
-  size_t * footer = GET_FOOTER(block);
-  *footer = GET_SIZE(block) + ADJUST_ALLOCATED;
+  *GET_FOOTER(block) = GET_SIZE(block);
 
   /* handle second block which allocated to user. */
   block = GET_NEXT(block);
-  block->size = bytes + ALLOCATED;
+  block->size = bytes | ALLOCATED;
+  *GET_FOOTER(block) = block->size;
 
-  /* set allocated status of the block behind allocating block. */
-  header * behind_block = GET_NEXT(block);
-  behind_block->size += ADJUST_ALLOCATED;
+  /* set allocated status of the next block. */
+  GET_NEXT(block)->size |= ADJUST_ALLOCATED;
 
   return block;
 }
@@ -402,17 +469,36 @@ static bool expand_heap(size_t bytes)
 {
   /* make bytes aligned and larger than or equal to minimum value. */
   bytes = ALIGN(bytes);
-  if (bytes < MIN_HEAP_INC)
-    bytes = MIN_HEAP_INC;
+  if (bytes < ALIGN(MIN_HEAP_INC))
+    bytes = ALIGN(MIN_HEAP_INC);
 
-  /* expand heap. */
-  void * ptr = mem_sbrk(ALIGN(bytes));
+  // FIXME
+  debug_flag = true;
+  prt("expand: aligned bytes", bytes);
+
+  /* expand heap using mem_sbrk. */
+  void * ptr = mem_sbrk(bytes);
   if (ptr == (void *) -1)
     return false;
-  else {
-    ((header *) ptr)->size = bytes;
-    list_add(&alloc_list, &((header *) ptr)->elem);
-    mm_free((char *) ptr + ALIGN(sizeof(header)));
+  else
+  {
+    header * area = GET_HEADER(ptr);
+    area->size
+      = bytes
+      | (IS_ALLOCATED(GET_PREV(area)) ? ADJUST_ALLOCATED : NONE);
+    *GET_FOOTER(area) = bytes;
+
+    prtp("expand: area", area);
+
+    /* set dummy tail block. */
+    GET_NEXT(area)->size = ALLOCATED;
+
+    msg("expand_heap calls free");
+    list_add(&alloc_list, &area->elem);
+    mm_free(ptr);
+
+    debug_flag = false;
+
     return true;
   }
 }
@@ -427,28 +513,64 @@ void mm_free(void * ptr)
 
   header * free_block = GET_HEADER(ptr);
 
+  debug_flag = true;
+  msg("free called");
+  prtp("free: pointer to free_block", free_block);
+  prt("free: size of free_block", GET_SIZE(free_block));
+  prt("free: state of free_block", GET_ALLOC(free_block));
+
   /* remove from alloc list. */
   if (list_remove(&free_block->elem) == NULL)
     return;
 
+  msg("free calls coalesce_block");
+  /* set free and coalescing blocks. */
+  set_free_state(free_block);
   free_block = coalesce_block(free_block);
+  msg("free: coalesce over");
+  prt("free: size of free_block", GET_SIZE(free_block));
+  prt("free: state of free_block", GET_ALLOC(free_block));
 
   /* add to free list. */
   int index = size_to_index(GET_SIZE(free_block));
   list_add(&free_bin[index], &free_block->elem);
+
+  debug_flag = false;
 }
 
 static header * coalesce_block(header * block)
 {
-  header * coalesced_block = block;
+  header * merged_block = block;
 
-  // TODO
+  /* merge with previous block. */
+  if (!IS_ADJUST_ALLOCATED(block))
+  {
+    /* retreive previous block. */
+    merged_block = GET_PREV(block);
+    list_remove(&merged_block->elem);
 
-  /* temp */
-  coalesced_block->size |= ALLOCATED;
-  coalesced_block->size ^= ALLOCATED;
+    /* merge blocks. */
+    merged_block->size += block->size;
+    *GET_FOOTER(block) = GET_SIZE(merged_block);
 
-  return coalesced_block;
+    msg("coalesce: merge prev");
+  }
+
+  /* merge with next block. */
+  if (!IS_ALLOCATED(GET_NEXT(merged_block)))
+  {
+    /* retreive next block. */
+    block = GET_NEXT(block);
+    list_remove(&block->elem);
+
+    /* merge blocks. */
+    merged_block->size += GET_SIZE(block);
+    *GET_FOOTER(block) = GET_SIZE(merged_block);
+
+    msg("coalesce: merge next");
+  }
+
+  return merged_block;
 }
 
 /*
@@ -456,6 +578,11 @@ static header * coalesce_block(header * block)
  */
 void * mm_realloc(void * ptr, size_t t)
 {
+  deb();
+  prt("", 0);
+  prtp("", NULL);
+  msg("");
+  list_print(&alloc_list);
   return ptr;
 }
 
@@ -464,10 +591,19 @@ void * mm_realloc(void * ptr, size_t t)
  */
 void mm_exit(void)
 {
+  debug_flag = true;
+  msg("mm_exit called");
+  debug_flag = false;
+
   list_elem * e = list_first(&alloc_list);
   while (!list_is_tail(e))
   {
     e = e->next;
-    mm_free(e->prev + 1);
+    header * block = list_item(e->prev, header, elem);
+    mm_free(GET_PAYLOAD(block));
   }
+
+  debug_flag = true;
+  msg("mm_exit returnning");
+  debug_flag = false;
 }
