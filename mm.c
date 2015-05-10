@@ -1,6 +1,4 @@
 /*
- * mm-naive.c - The fastest, least memory-efficient malloc package.
- *
  * In this naive approach, a block is allocated by simply incrementing
  * the brk pointer.  A block is pure payload. There are no headers or
  * footers.  Blocks are never coalesced or reused. Realloc is
@@ -38,13 +36,12 @@ team_t team = {
 /* DON'T MODIFY THIS VALUE AND LEAVE IT AS IT WAS */
 static range_t ** gl_ranges;
 
-/* length of all free_bins */
+/* default sizes for bin, expanding heap. */
 #define BIN_SIZE 128
+#define MIN_HEAP_INC 1024
 
 /* single word (4) or double word (8) alignment */
 #define ALIGNMENT 8
-
-#define MIN_HEAP_INC 1024
 
 /* rounds up to the nearest multiple of ALIGNMENT */
 #define ALIGN(size) (((size) + (ALIGNMENT-1)) & ~0x7)
@@ -56,14 +53,20 @@ static range_t ** gl_ranges;
 #define OFFSET_OF(type, member) ((size_t) &((type *) 0)->member)
 
 /* take values for header. */
-#define GET_SIZE(h) (((header *) h)->size & ~0x7)
+#define GET_SIZE(h) ((size_t) (((header *) h)->size & ~0x7))
 
-#define GET_ALLOC(h) (((header *) h)->size & 0x3)
+#define GET_ALLOC(h) ((int) (((header *) h)->size & 0x3))
 
-#define GET_HEADER(p) ((header *) p - 1)
+#define GET_FOOTER(h) \
+  ((size_t *) (((char *) h) + GET_SIZE(h) - ALIGN(sizeof(size_t))))
+
+#define GET_NEXT(h) ((header *) ((char *) block + GET_SIZE(block)))
+
+#define ALLOCATED 0x1
+#define ADJUST_ALLOCATED 0x2
 
 /* use hand-made boolean. */
-typedef signed char bool;
+typedef char bool;
 #define true 1
 #define false 0
 
@@ -236,17 +239,7 @@ static list_elem * list_get(list * list)
   list_remove(list_front);
   return list_front;
 }
-/*
-static size_t list_size(list * list)
-{
-  size_t size = 0;
-  list_elem * e;
 
-  for (e = list_first(list); e != list_last(list); e = e->next)
-    size++;
-  return size;
-}
-*/
 static bool list_empty(list * list)
 {
   return (bool) (list->head.next == &list->tail);
@@ -260,15 +253,7 @@ static bool list_compare
 
   return (bool) (h_left->size < h_right->size);
 }
-/*
-static void list_swap
-  (list_elem ** left_elem, list_elem ** right_elem)
-{
-  list_elem * temp_elem = *left_elem;
-  *left_elem = *right_elem;
-  *right_elem = temp_elem;
-}
-*/
+
 static void list_print(list * list)
 {
   int i;
@@ -285,18 +270,10 @@ static void list_print(list * list)
     }
 }
 
-static void bin_print()
-{
-
-  // TODO
-
-}
-
 static int size_to_index(size_t bytes)
 {
   int i;
   unsigned int words = (bytes - 1) / ALIGNMENT + 1;
-  prt("stoi_words", words);
   if (words <= 2)
     return 0;
   else if (words == 3)
@@ -314,14 +291,10 @@ static int size_to_index(size_t bytes)
  */
 int mm_init(range_t **ranges)
 {
-  debug_flag = true;
-  printf("\n\n");
-  msg("mm_init start...");
   /* initialize free_bin of free lists. */
   size_t size = ALIGN(BIN_SIZE * sizeof(list));
   void * allocated_area = mem_sbrk(size);
 
-  msg("mm_init bin...");
   if (allocated_area == (void *) -1)
     free_bin = NULL;
   else {
@@ -332,20 +305,15 @@ int mm_init(range_t **ranges)
       list_init(free_bin + i);
   }
 
-  msg("mm_init alloc list...");
   /* initialize alloc list. */
   list_init(&alloc_list);
 
-  msg("mm_init expand heap...");
   /* create the initial empty heap. */
   if (!expand_heap(MIN_HEAP_INC))
     return -1;
 
   /* DON't MODIFY THIS STAGE AND LEAVE IT AS IT WAS */
   gl_ranges = ranges;
-
-  msg("mm_init over...");
-  debug_flag = false;
   return 0;
 }
 
@@ -355,10 +323,6 @@ int mm_init(range_t **ranges)
  */
 void * mm_malloc(size_t payload)
 {
-  /*
-  ((header *) ptr)->size = ALIGN(size);
-  ((header *) ptr)->size |= 0x1;
-  */
   void * ret_ptr;
 
   /* set bytes for allocate, considering minimum value. */
@@ -368,20 +332,25 @@ void * mm_malloc(size_t payload)
 
   /* search best fit block from small size class. */
   int index = size_to_index(bytes);
-  for (; index < BIN_SIZE; index++)
-  { // for lists in free_bin.
+  while (true)
+  {
+    /* search best-fit free block. */
     if (!list_empty(&free_bin[index]))
       if ((ret_ptr = get_fit_block(&free_bin[index], bytes)) != NULL)
         return ret_ptr;
-  }
 
-  /* get more space when failed to allocate proper block. */
-  if (!expand_heap(payload))
-    return NULL;
-  else
-    return mm_malloc(payload);
+    /* get more space when failed to allocate proper block. */
+    if (++index == BIN_SIZE)
+      if (!expand_heap(payload))
+        return NULL;
+      else
+        index = size_to_index(bytes);
+  }
 }
 
+/*
+ * get_fit_block - Search a best fit block by check all blocks in list.
+ */
 static void * get_fit_block(list * list, size_t bytes)
 {
   list_elem * e = list_get(list);
@@ -389,45 +358,63 @@ static void * get_fit_block(list * list, size_t bytes)
   { // for list_elems.
     header * e_block = list_item(e, header, elem);
 
-    /* do not match. */
-    if (e_block->size < bytes)
-      continue;
-
-    /* match. */
-    else if (e_block->size > bytes)
-      split_block(e_block, bytes);
-
-    list_remove(e);
-    list_add(&alloc_list, e);
-    return (void *) (e_block + 1);
+    /* check if e_block is big enough to match. */
+    if (e_block->size >= bytes)
+    {
+      if (e_block->size == bytes)
+      {
+        list_remove(e);
+        list_add(&alloc_list, e);
+      }
+      else
+      {
+        e_block = split_block(e_block, bytes);
+        list_add(&alloc_list, e_block);
+      }
+      return (void *) (e_block + 1);
+    }
   }
   /* do not match at all. */
   return NULL;
 }
 
-static void split_block(header * block, size_t bytes)
+/*
+ * split_block - Split a one block to two adjust blocks.
+ *  Return a pointer to header of second block.
+ */
+static header * split_block(header * block, size_t bytes)
 {
+  /* handle first block which remains in the free list. */
+  block->size -= bytes;
+  size_t * footer = GET_FOOTER(block);
+  *footer = GET_SIZE(block) + ADJUST_ALLOCATED;
 
-  // TODO
+  /* handle second block which allocated to user. */
+  block = GET_NEXT(block);
+  block->size = bytes + ALLOCATED;
 
+  /* set allocated status of the block behind allocating block. */
+  header * behind_block = GET_NEXT(block);
+  behind_block->size += ADJUST_ALLOCATED;
+
+  return block;
 }
 
 static bool expand_heap(size_t bytes)
 {
-  msg("expand_heap setting...");
-  /* make bytes larger than or equal to minimum value. */
+  /* make bytes aligned and larger than or equal to minimum value. */
+  bytes = ALIGN(bytes);
   if (bytes < MIN_HEAP_INC)
     bytes = MIN_HEAP_INC;
 
   /* expand heap. */
   void * ptr = mem_sbrk(ALIGN(bytes));
-  msg("mem_sbrk done...");
   if (ptr == (void *) -1)
     return false;
   else {
     ((header *) ptr)->size = bytes;
+    list_add(&alloc_list, &((header *) ptr)->elem);
     mm_free((char *) ptr + ALIGN(sizeof(header)));
-    msg("expand_heap added new block to free list");
     return true;
   }
 }
@@ -440,18 +427,17 @@ void mm_free(void * ptr)
   if (gl_ranges)
     remove_range(gl_ranges, ptr);
 
-  msg("mm_free setting...");
   header * free_ptr = (header *) ptr - 1;
-  msg("mm_free got header...");
-  list_remove(&free_ptr->elem);
-  msg("mm_free removed block from alloc_list...");
-  free_ptr = coalesce_block(free_ptr);
-  msg("mm_free coalescing...");
 
+  /* remove from alloc list. */
+  if (list_remove(&free_ptr->elem) == NULL)
+    return;
+
+  free_ptr = coalesce_block(free_ptr);
+
+  /* add to free list. */
   int index = size_to_index(GET_SIZE(free_ptr));
-  msg("mm_free setting to add block to list...");
   list_add(&free_bin[index], &free_ptr->elem);
-  msg("mm_free added block to free list...");
 }
 
 static header * coalesce_block(header * block)
