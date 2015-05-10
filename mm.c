@@ -62,6 +62,8 @@ static range_t ** gl_ranges;
 
 #define GET_NEXT(h) ((header *) ((char *) block + GET_SIZE(block)))
 
+#define GET_HEADER(p) ((header *) p - 1)
+
 #define ALLOCATED 0x1
 #define ADJUST_ALLOCATED 0x2
 
@@ -114,13 +116,11 @@ static void list_insert(list_elem *, list_elem *);
 static void list_add(list *, list_elem *);
 static list_elem * list_remove(list_elem *);
 static list_elem * list_get(list *);
-//static size_t list_size(list *);
 static bool list_empty(list *);
-//static void list_swap(list_elem **, list_elem **);
 static bool list_compare(list_elem *, list_elem *);
 static int size_to_index(size_t);
 static void * get_fit_block(list *, size_t);
-static void split_block(header *, size_t);
+static header * split_block(header *, size_t);
 static bool expand_heap(size_t);
 static header * coalesce_block(header *);
 
@@ -132,7 +132,7 @@ static list alloc_list;
 
 /* for debugging. */
 static int debug_count;
-static bool debug_flag = false;
+static bool debug_flag;
 
 static void deb(void)
 {
@@ -272,17 +272,15 @@ static void list_print(list * list)
 
 static int size_to_index(size_t bytes)
 {
-  int i;
   unsigned int words = (bytes - 1) / ALIGNMENT + 1;
-  if (words <= 2)
+  if (words <= 1)
     return 0;
-  else if (words == 3)
-    return 1;
-  else if (words == 4)
-    return 2;
+  else if (words <= 64)
+    return words - 2;
   else {
-    for (i = 8; i < words; i = i << 1) ;
-    return i;
+    int i = 1;
+    for (words -= 64; i * ALIGNMENT < words; i++) ;
+    return i + 62;
   }
 }
 
@@ -369,7 +367,7 @@ static void * get_fit_block(list * list, size_t bytes)
       else
       {
         e_block = split_block(e_block, bytes);
-        list_add(&alloc_list, e_block);
+        list_add(&alloc_list, &e_block->elem);
       }
       return (void *) (e_block + 1);
     }
@@ -427,17 +425,17 @@ void mm_free(void * ptr)
   if (gl_ranges)
     remove_range(gl_ranges, ptr);
 
-  header * free_ptr = (header *) ptr - 1;
+  header * free_block = GET_HEADER(ptr);
 
   /* remove from alloc list. */
-  if (list_remove(&free_ptr->elem) == NULL)
+  if (list_remove(&free_block->elem) == NULL)
     return;
 
-  free_ptr = coalesce_block(free_ptr);
+  free_block = coalesce_block(free_block);
 
   /* add to free list. */
-  int index = size_to_index(GET_SIZE(free_ptr));
-  list_add(&free_bin[index], &free_ptr->elem);
+  int index = size_to_index(GET_SIZE(free_block));
+  list_add(&free_bin[index], &free_block->elem);
 }
 
 static header * coalesce_block(header * block)
