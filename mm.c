@@ -127,7 +127,6 @@ static list_elem * list_last(list *);
 static void list_insert(list_elem *, list_elem *);
 static void list_add(list *, list_elem *);
 static list_elem * list_remove(list_elem *);
-static list_elem * list_get(list *);
 static bool list_empty(list *);
 static bool list_compare(list_elem *, list_elem *);
 
@@ -146,31 +145,51 @@ static list * free_bin;
 static list alloc_list;
 
 /* for debugging. */
+static int debug_indent;
 static int debug_count;
 static bool debug_flag;
+
+static void deb_print_indent(void)
+{
+  int i;
+  for (i = 0; i < debug_indent; i++)
+    printf(" | ");
+}
 
 static void deb(void)
 {
   if (debug_flag)
-    printf("==== Debug Point : (%d)\n", ++debug_count);
+  {
+    deb_print_indent();
+    printf(" Debug Point : (%d)\n", ++debug_count);
+  }
 }
 
 static void prt(const char * str, long num)
 {
   if (debug_flag)
-    printf("==== %s : %ld\n", str, num);
+  {
+    deb_print_indent();
+    printf(" %s : %ld\n", str, num);
+  }
 }
 
 static void prtp(const char * str, void * ptr)
 {
   if (debug_flag)
-    printf("==== %s : %p\n", str, ptr);
+  {
+    deb_print_indent();
+    printf(" %s : %p\n", str, ptr);
+  }
 }
 
 static void msg(const char * str)
 {
   if (debug_flag)
-    printf("==== %s : (%d)\n", str, ++debug_count);
+  {
+    deb_print_indent();
+    printf(" %s : (%d)\n", str, ++debug_count);
+  }
 }
 
 /*
@@ -214,14 +233,6 @@ static list_elem * list_first(list * list)
     return list->head.next;
 }
 
-static list_elem * list_last(list * list)
-{
-  if (list == NULL)
-    return NULL;
-  else
-    return list->tail.prev;
-}
-
 static void list_insert
   (list_elem * old_elem, list_elem * elem)
 {
@@ -237,7 +248,7 @@ static void list_insert
 static void list_add(list * list, list_elem * elem)
 {
   list_elem * e;
-  for (e = list_first(list); e != list_last(list); e = e->next)
+  for (e = list_first(list); !list_is_tail(e); e = e->next)
     if (list_compare(elem, e))
       break;
 
@@ -250,15 +261,10 @@ static list_elem * list_remove(list_elem * elem)
     return NULL;
 
   elem->prev->next = elem->next;
+  msg("elem->prev->next = elem->next");
   elem->next->prev = elem->prev;
+  msg("elem->next->prev = elem->prev");
   return elem->next;
-}
-
-static list_elem * list_get(list * list)
-{
-  list_elem * list_front = list_first(list);
-  list_remove(list_front);
-  return list_front;
 }
 
 static bool list_empty(list * list)
@@ -277,13 +283,12 @@ static bool list_compare
 
 static void list_print(list * list)
 {
-  int i;
   list_elem * e;
-  for (e = &list->head, i = 1; ; e = e->next)
+  for (e = &list->head; ; e = e->next)
     if (list_is_head(e))
       printf("|h|");
     else if (list_is_body(e))
-      printf("-|%d|", i++);
+      printf("-|%d|", GET_SIZE(list_item(e, header, elem)));
     else
     {
       printf("-|t|\n");
@@ -324,10 +329,9 @@ int mm_init(range_t ** ranges)
     + ALIGN(sizeof(header));                          // dummy tail block.
   void * allocated_area = mem_sbrk(size);
 
-  // FIXME
   debug_flag = true;
+  debug_indent++;
   msg("mm_init called");
-  debug_flag = false;
 
   if (allocated_area == (void *) -1)
     free_bin = NULL;
@@ -353,6 +357,7 @@ int mm_init(range_t ** ranges)
   /* initialize alloc list. */
   list_init(&alloc_list);
 
+  debug_indent--;
   /* DON't MODIFY THIS STAGE AND LEAVE IT AS IT WAS */
   gl_ranges = ranges;
   return 0;
@@ -366,8 +371,7 @@ void * mm_malloc(size_t payload)
 {
   header * ret_block;
 
-  // FIXME
-  debug_flag = true;
+  debug_indent++;
   msg("malloc called");
   prt("malloc: payload", payload);
 
@@ -385,6 +389,10 @@ void * mm_malloc(size_t payload)
     /* search best-fit free block. */
     if (!list_empty(&free_bin[index]))
     {
+      prt("malloc: found non-empty free list, index", index);
+      deb_print_indent();
+      printf(" free_bin[%d]: ", index);
+      list_print(free_bin + index);
       ret_block = get_fit_block(&free_bin[index], bytes);
       if (ret_block != NULL)
       {
@@ -394,8 +402,8 @@ void * mm_malloc(size_t payload)
 
         prt("malloc: found free block, index", index);
         prtp("malloc: pointer to ret_block", ret_block);
-        debug_flag = false;
 
+        debug_indent--;
         return GET_PAYLOAD(ret_block);
       }
     }
@@ -408,6 +416,7 @@ void * mm_malloc(size_t payload)
         return NULL;
       else
         index = size_to_index(bytes);
+      msg("malloc: expand successed");
     }
   }
 }
@@ -418,7 +427,8 @@ void * mm_malloc(size_t payload)
  */
 static header * get_fit_block(list * list, size_t bytes)
 {
-  list_elem * e = list_get(list);
+  debug_indent++;
+  list_elem * e = list_first(list);
   for (; !list_is_tail(e); e = e->next)
   {
     header * e_block = list_item(e, header, elem);
@@ -436,11 +446,14 @@ static header * get_fit_block(list * list, size_t bytes)
         msg("malloc calls split_block");
         e_block = split_block(e_block, bytes);
         list_add(&alloc_list, &e_block->elem);
+        prtp("malloc: a block splited out, pointer", e_block);
       }
+      debug_indent--;
       return e_block;
     }
   }
   /* do not match at all. */
+  debug_indent--;
   return NULL;
 }
 
@@ -450,30 +463,45 @@ static header * get_fit_block(list * list, size_t bytes)
  */
 static header * split_block(header * block, size_t bytes)
 {
+  debug_indent++;
+  prt("malloc: original block size", GET_SIZE(block));
   /* handle first block which remains in the free list. */
   block->size -= bytes;
   *GET_FOOTER(block) = GET_SIZE(block);
+
+  prt("malloc: splited block 1 size", GET_SIZE(block));
+  prt("malloc: splited block 1 alloc", GET_ALLOC(block));
+
+  deb();
+  list_remove(&block->elem);
+  list_add(&alloc_list, &block->elem);
 
   /* handle second block which allocated to user. */
   block = GET_NEXT(block);
   block->size = bytes | ALLOCATED;
   *GET_FOOTER(block) = block->size;
 
+  prt("malloc: splited block 2 size", GET_SIZE(block));
+  prt("malloc: splited block 2 alloc", GET_ALLOC(block));
+  prtp("malloc: calls free, block 1", GET_PREV(block));
+  /* rearrange first block. */
+  mm_free(GET_PAYLOAD(GET_PREV(block)));
+
   /* set allocated status of the next block. */
   GET_NEXT(block)->size |= ADJUST_ALLOCATED;
 
+  debug_indent--;
   return block;
 }
 
 static bool expand_heap(size_t bytes)
 {
+  debug_indent++;
   /* make bytes aligned and larger than or equal to minimum value. */
   bytes = ALIGN(bytes);
   if (bytes < ALIGN(MIN_HEAP_INC))
     bytes = ALIGN(MIN_HEAP_INC);
 
-  // FIXME
-  debug_flag = true;
   prt("expand: aligned bytes", bytes);
 
   /* expand heap using mem_sbrk. */
@@ -485,19 +513,20 @@ static bool expand_heap(size_t bytes)
     header * area = GET_HEADER(ptr);
     area->size
       = bytes
-      | (IS_ALLOCATED(GET_PREV(area)) ? ADJUST_ALLOCATED : NONE);
+      | (IS_ADJUST_ALLOCATED(area) ? ADJUST_ALLOCATED : NONE);
     *GET_FOOTER(area) = bytes;
-
-    prtp("expand: area", area);
 
     /* set dummy tail block. */
     GET_NEXT(area)->size = ALLOCATED;
 
     msg("expand_heap calls free");
+    prtp("expand: pointer to heap chunk", area);
+
     list_add(&alloc_list, &area->elem);
     mm_free(ptr);
 
-    debug_flag = false;
+    msg("expand_heap: free done");
+    debug_indent--;
 
     return true;
   }
@@ -513,11 +542,12 @@ void mm_free(void * ptr)
 
   header * free_block = GET_HEADER(ptr);
 
-  debug_flag = true;
+  debug_indent++;
   msg("free called");
   prtp("free: pointer to free_block", free_block);
   prt("free: size of free_block", GET_SIZE(free_block));
-  prt("free: state of free_block", GET_ALLOC(free_block));
+  prt("free: alloc_state - free_block", GET_ALLOC(free_block));
+  prt("free: alloc_state - next_block", GET_ALLOC(GET_NEXT(free_block)));
 
   /* remove from alloc list. */
   if (list_remove(&free_block->elem) == NULL)
@@ -534,12 +564,16 @@ void mm_free(void * ptr)
   /* add to free list. */
   int index = size_to_index(GET_SIZE(free_block));
   list_add(&free_bin[index], &free_block->elem);
-
-  debug_flag = false;
+  prt("free: rearranged block to bin[index], index", index);
+  deb_print_indent();
+  printf(" free_bin[%d]: ", index);
+  list_print(free_bin + index);
+  debug_indent--;
 }
 
 static header * coalesce_block(header * block)
 {
+  debug_indent++;
   header * merged_block = block;
 
   /* merge with previous block. */
@@ -553,7 +587,7 @@ static header * coalesce_block(header * block)
     merged_block->size += block->size;
     *GET_FOOTER(block) = GET_SIZE(merged_block);
 
-    msg("coalesce: merge prev");
+    msg("free: merge prev");
   }
 
   /* merge with next block. */
@@ -567,9 +601,10 @@ static header * coalesce_block(header * block)
     merged_block->size += GET_SIZE(block);
     *GET_FOOTER(block) = GET_SIZE(merged_block);
 
-    msg("coalesce: merge next");
+    msg("free: merge next");
   }
 
+  debug_indent--;
   return merged_block;
 }
 
@@ -578,10 +613,6 @@ static header * coalesce_block(header * block)
  */
 void * mm_realloc(void * ptr, size_t t)
 {
-  deb();
-  prt("", 0);
-  prtp("", NULL);
-  msg("");
   list_print(&alloc_list);
   return ptr;
 }
@@ -591,9 +622,8 @@ void * mm_realloc(void * ptr, size_t t)
  */
 void mm_exit(void)
 {
-  debug_flag = true;
+  debug_indent++;
   msg("mm_exit called");
-  debug_flag = false;
 
   list_elem * e = list_first(&alloc_list);
   while (!list_is_tail(e))
@@ -602,8 +632,6 @@ void mm_exit(void)
     header * block = list_item(e->prev, header, elem);
     mm_free(GET_PAYLOAD(block));
   }
-
-  debug_flag = true;
   msg("mm_exit returnning");
-  debug_flag = false;
+  debug_indent--;
 }
