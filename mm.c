@@ -353,7 +353,7 @@ static void * get_fit_block(list * list, size_t bytes)
 {
   list_elem * e = list_get(list);
   for (; !list_is_tail(e); e = e->next)
-  { // for list_elems.
+  {
     header * e_block = list_item(e, header, elem);
 
     /* check if e_block is big enough to match. */
@@ -443,6 +443,10 @@ static header * coalesce_block(header * block)
   header * coalesced_block = block;
 
   // TODO
+
+  /* temp */
+  coalesced_block->size |= ALLOCATED;
+  coalesced_block->size ^= ALLOCATED;
 
   return coalesced_block;
 }
