@@ -75,9 +75,6 @@ static range_t ** gl_ranges;
 #define ALLOCATED 0x1
 #define ADJUST_ALLOCATED 0x2
 
-#define IS_ALLOCATED(h) \
-  ((GET_ALLOC(h) & ALLOCATED) ? true : false)
-
 #define IS_ADJUST_ALLOCATED(h) \
   ((GET_ALLOC(h) & ADJUST_ALLOCATED) ? true : false)
 
@@ -176,7 +173,7 @@ static void dc(void)
 {
   if (debug_flag)
   {
-    prti();
+    deb_print_indent();
     printf(" Debug Point : (%d)\n", ++debug_count);
   }
 }
@@ -185,7 +182,7 @@ static void prt(const char * str, long long num)
 {
   if (debug_flag)
   {
-    prti();
+    deb_print_indent();
     printf(" %s : %lld\n", str, num);
   }
 }
@@ -194,7 +191,7 @@ static void prtp(const char * str, void * ptr)
 {
   if (debug_flag)
   {
-    prti();
+    deb_print_indent();
     printf(" %s : %p\n", str, ptr);
   }
 }
@@ -203,7 +200,7 @@ static void msg(const char * str)
 {
   if (debug_flag)
   {
-    prti();
+    deb_print_indent();
     printf(" %s\n", str);
   }
 }
@@ -231,19 +228,19 @@ static void prtb(void)
   if (!debug_flag)
     return;
 
-  prti();
+  deb_print_indent();
   printf(" print free bin[0~127]...\n");
-  inc();
+  debug_indent++;
 
   int index;
   for (index = 0; index < BIN_SIZE; index++)
     if (!list_empty(&free_bin[index]))
     {
-      prti();
-      printf(" bin[%d]: ", index);
-      prtl(&free_bin[index]);
+      deb_print_indent();
+      printf(" bin[%d]:\t", index);
+      list_print(&free_bin[index]);
     }
-  dec();
+  debug_indent--;
 }
 
 /*
@@ -359,9 +356,6 @@ static void set_free_state(header * block)
  */
 int mm_init(range_t ** ranges)
 {
-  df(true);
-  msg("<init called>");
-
   /* initialize free_bin of free lists and allocate space for dummy block. */
   size_t size
     = ALIGN(BIN_SIZE * sizeof(list))                  // bin[BIN_SIZE].
@@ -429,7 +423,8 @@ void * mm_malloc(size_t payload)
         ret_block->size |= ALLOCATED;
         GET_NEXT(ret_block)->size |= ADJUST_ALLOCATED;
 
-        prt("<malloc found block in bin[index]>", index);
+        msg("<malloc found block in bin[index]>", index);
+        prtl(&free_bin[index]);
         prtb();
         dec();
 
@@ -561,14 +556,8 @@ static bool expand_heap(size_t bytes)
     /* set dummy tail block. */
     GET_NEXT(area)->size = ALIGN(sizeof(header)) | ALLOCATED;
 
-    msg("<expand set chunk>");
-    msg("<expand calls free>");
-
     list_add(&alloc_list, &area->elem);
     mm_free(ptr);
-
-    msg("<expand get return free>");
-    dec();
 
     return true;
   }
@@ -584,34 +573,22 @@ void mm_free(void * ptr)
 
   header * free_block = GET_HEADER(ptr);
 
-  inc();
-  msg("<free called>");
-
   /* remove from alloc list. */
   if (list_remove(&free_block->elem) == NULL)
     return;
 
-  msg("<free calles coalesce>");
   /* set free and coalescing blocks. */
   set_free_state(free_block);
   free_block = coalesce_block(free_block);
-  msg("<free get return coalesce>");
 
   /* add to free list. */
   int index = size_to_index(GET_SIZE(free_block));
   list_add(&free_bin[index], &free_block->elem);
-
-  prt("<free add block to bin[index]>", index);
-  prtb();
-  dec();
 }
 
 static header * coalesce_block(header * block)
 {
   header * merged_block = block;
-
-  inc();
-  msg("<coalesce called>");
 
   /* merge with previous block. */
   if (!IS_ADJUST_ALLOCATED(block))
@@ -623,8 +600,6 @@ static header * coalesce_block(header * block)
     /* merge blocks. */
     merged_block->size += block->size;
     *GET_FOOTER(block) = GET_SIZE(merged_block);
-
-    msg("<coalesce merge previous>");
   }
 
   /* merge with next block. */
@@ -637,11 +612,8 @@ static header * coalesce_block(header * block)
     /* merge blocks. */
     merged_block->size += GET_SIZE(block);
     *GET_FOOTER(block) = GET_SIZE(merged_block);
-
-    msg("<coalesce merge next>");
   }
 
-  dec();
   return merged_block;
 }
 
@@ -658,8 +630,6 @@ void * mm_realloc(void * ptr, size_t t)
  */
 void mm_exit(void)
 {
-  msg("<mm_exit called>");
-
   list_elem * e = list_first(&alloc_list);
   while (!list_is_tail(e))
   {
@@ -667,6 +637,4 @@ void mm_exit(void)
     header * block = list_item(e->prev, header, elem);
     mm_free(GET_PAYLOAD(block));
   }
-
-  dec();
 }
