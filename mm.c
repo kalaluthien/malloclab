@@ -145,13 +145,13 @@ typedef struct {
 /* list operations. */
 static void list_init(list *);
 static list_elem * list_first(list *);
-static void list_add(list *, list_elem *);
+static void list_insert(list *, list_elem *);
 static list_elem * list_remove(list_elem *);
 static bool list_empty(list *);
 
 /* rbtree operations. */
 static void tree_insert(list *, list_elem *);
-static list_elem * tree_retrieve(list *, size_t);
+static list_elem * tree_get_best_fit(list *, size_t);
 static list_elem * tree_remove(list_elem *);
 
 /* private functions. */
@@ -271,7 +271,7 @@ static list_elem * list_first(list * list)
   return list->head.next;
 }
 
-static void list_add(list * list, list_elem * elem)
+static void list_insert(list * list, list_elem * elem)
 {
   list_elem * e = list_first(list);
 
@@ -302,7 +302,10 @@ static bool list_empty(list * list)
  */
 
 static list_elem * tree_insert_rec(list_elem *, list_elem *, list_elem *);
-/*
+static bool is_big_enough(header *, size_t);
+static bool is_small_to_split(header *, size_t);
+
+/* insert free block(elem) to tree. */
 static void tree_insert(list * tree, list_elem * elem)
 {
   list_elem * root = tree_root(tree);
@@ -315,28 +318,60 @@ static list_elem * tree_insert_rec
   if (root == nil)
     // TODO
 
+    return NULL;
 }
 
-static list_elem * tree_retrieve(list * tree, size_t size)
+/*
+ * search best fit block not less than size from tree,
+ * remove that block from tree, and return the block.
+ */
+static list_elem * tree_get_best_fit(list * tree, size_t size)
 {
+  /* search best fit block. */
   list_elem * root = tree_root(tree);
-  return tree_retrieve(root, size, &tree->tail);
+  root = tree_retrieve_rec(root, size, &tree->tail);
+
+  /* remove block from free tree. */
+  tree_remove(root);
+
+  return root;
 }
 
-static list_elem * tree_retrieve(list_elem * elem, size_t size, list_elem * nil)
+static list_elem * tree_retrieve_rec
+  (list_elem * elem, size_t size, list_elem * nil)
 {
   if (elem == nil)
     return NULL;
 
-  header * block = (tree_item(elem, header,
+  header * block = tree_item(elem, header, elem);
 
+  if (is_big_enough(block, size) && is_small_to_split(block, size))
+    return elem
+  else if ()
+  {
+    // TODO
+
+
+  }
 }
 
+static bool is_big_enough(header * block, size_t size)
+{
+  return (bool) (size <= GET_SIZE(block));
+}
+
+static bool is_small_to_split(header * block, size_t size)
+{
+  return (bool) (GET_SIZE(block) < size + MIN_MALLOC);
+}
+
+/* remove free block(elem) from its tree.  */
 static list_elem * tree_remove(list_elem * elem)
 {
-
+  // TODO
+  return NULL;
 }
-*/
+
 /* utility functions. */
 static int size_to_index(size_t bytes)
 {
@@ -476,7 +511,7 @@ static header * get_fit_block(list * list, size_t bytes)
       if (e_block->size < bytes + MIN_MALLOC)
       {
         list_remove(e);
-        list_add(&alloc_list, e);
+        list_insert(&alloc_list, e);
         dec();
         return e_block;
       }
@@ -492,7 +527,7 @@ static header * get_fit_block(list * list, size_t bytes)
   {
     msg("<search calls split>");
     fit_block = split_block(fit_block, bytes);
-    list_add(&alloc_list, &fit_block->elem);
+    list_insert(&alloc_list, &fit_block->elem);
     msg("<search get return split>");
   }
 
@@ -615,7 +650,7 @@ static void arrange_block(header * free_block)
 
   /* add to free list. */
   int index = size_to_index(GET_SIZE(free_block));
-  list_add(&free_bin[index], &free_block->elem);
+  list_insert(&free_bin[index], &free_block->elem);
 
   prt("<arrange add block to bin[index]>", index);
   dec();
