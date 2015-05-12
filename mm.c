@@ -1,7 +1,5 @@
 /*
  *  mm.c -
- *  copyright
- *
  *
  *
  *
@@ -21,10 +19,9 @@ ____Strcuture of free block______________________________________
     |      :                   |
     |      :                   |
  f  |                          |
- o  +--------------------+-+-+-+
- o  |    size:           |0|0|0|
- t  +--------------------+-+-+-+
-                          0 0 b
+ o  +--------------------------+
+ o  |    size:                 |
+ t  +--------------------------+
 
   Free block consists of three component:
   header, footer, and payload.
@@ -255,10 +252,6 @@ static range_t ** gl_ranges;
 #define GET_FOOTER(h) \
   ((footer *) (((char *) h) + GET_SIZE(h) - ALIGN(sizeof(footer))))
 
-#define GET_SIZE_FOOTER(h) (GET_FOOTER(h)->size & ~0x7)
-
-#define GET_ALLOC_FOOTER(h) (GET_FOOTER(h)->size & 0x3)
-
 #define GET_NEXT(h) ((header *) ((char *) h + GET_SIZE(h)))
 
 #define GET_PREV(h) \
@@ -278,7 +271,7 @@ static range_t ** gl_ranges;
 #define IS_ALLOCATED(h) \
   ((GET_ALLOC(h) & ALLOCATED) ? true : false)
 
-#define IS_ADJUST_ALLOCATED(h) \
+#define IS_PREV_ALLOCATED(h) \
   ((GET_ALLOC(h) & ADJUST_ALLOCATED) ? true : false)
 
 #define SET_ALLOC_FREE(block) block->size = (block->size & ~0x1)
@@ -345,12 +338,17 @@ static header * split_block(header *, size_t);
 static bool expand_heap(size_t);
 static void arrange_block(header *);
 static header * coalesce_block(header *);
+int mm_check(void);
+static void mm_check_alert(const char *);
 
 /* array of free lists. */
 static list * free_bin;
 
 /* pointer to alloc list. */
 static list * alloc_list;
+
+/* pointer to dummy_head.  */
+static header * dummy_head;
 
 /*
  * remove_range - manipulate range lists
@@ -464,14 +462,14 @@ int mm_init(range_t ** ranges)
   }
 
   /* initialize dummy blocks. */
-  header * dummy_head
+  dummy_head
     = (header *) ((char *) allocated_area + ALIGN((BIN_SIZE + 1) * sizeof(list)));
   dummy_head->size = MIN_MALLOC | ALLOCATED;
-  GET_FOOTER(dummy_head)->size = MIN_MALLOC | ALLOCATED;
+  GET_FOOTER(dummy_head)->size = MIN_MALLOC;
 
   header * dummy_tail
     = (header *) ((char *) allocated_area + size - ALIGN(sizeof(header)));
-  dummy_tail->size = ALIGN(sizeof(size_t)) | ADJUST_ALLOCATED | ALLOCATED;
+  dummy_tail->size = ALIGN(sizeof(header)) | ADJUST_ALLOCATED | ALLOCATED;
 
   /* initialize alloc list. */
   alloc_list
@@ -538,10 +536,10 @@ static header * get_fit_block(list * list, size_t bytes)
     header * block = list_item(e, header, elem);
 
     /* check if block is big enough to match. */
-    if (block->size >= bytes)
+    if (GET_SIZE(block) >= bytes)
     {
       /* exact size. */
-      if (block->size < bytes + MIN_MALLOC)
+      if (GET_SIZE(block) < bytes + MIN_MALLOC)
       {
         list_remove(e);
         list_insert(alloc_list, e);
@@ -549,7 +547,7 @@ static header * get_fit_block(list * list, size_t bytes)
       }
 
       /* check big size blocks to find smallest. */
-      else if (fit_block == NULL || fit_block->size > block->size)
+      else if (fit_block == NULL || GET_SIZE(fit_block) > GET_SIZE(block))
           fit_block = block;
     }
   }
@@ -576,7 +574,7 @@ static header * split_block(header * block, size_t bytes)
   /* handle second block which allocated to user. */
   block = GET_NEXT(block);
   block->size = bytes | ALLOCATED;
-  GET_FOOTER(block)->size = block->size;
+  GET_FOOTER(block)->size = GET_SIZE(block);
 
   /* rearrange first block. */
   list_remove(&GET_PREV(block)->elem);
@@ -608,11 +606,11 @@ static bool expand_heap(size_t bytes)
     header * area = GET_HEADER(ptr);
     area->size
       = bytes
-      | (IS_ADJUST_ALLOCATED(area) ? ADJUST_ALLOCATED : NONE);
+      | (IS_PREV_ALLOCATED(area) ? ADJUST_ALLOCATED : NONE);
     GET_FOOTER(area)->size = bytes;
 
     /* set dummy tail block. */
-    GET_NEXT(area)->size = ALIGN(sizeof(header)) | ALLOCATED;
+    GET_NEXT(area)->size = ALLOCATED;
 
     /* put block to free list. */
     arrange_block(area);
@@ -636,7 +634,7 @@ void mm_free(void * ptr)
   if (list_remove(&free_block->elem) == NULL)
   {
     perror("double freed.\n");
-    exit(-1);
+    return;
   }
 
   /* put block to free list. */
@@ -659,22 +657,22 @@ static void arrange_block(header * free_block)
 }
 
 /*
- * coalesce_block - Coalescing adjust blocks.
+ * coalesce_block - Coalescing adjust blocks by using boundery tags.
  */
 static header * coalesce_block(header * block)
 {
   header * merged_block = block;
 
   /* merge with previous block. */
-  if (!IS_ADJUST_ALLOCATED(block))
+  if (!IS_PREV_ALLOCATED(block))
   {
     /* retreive previous block. */
     merged_block = GET_PREV(block);
     list_remove(&merged_block->elem);
 
     /* merge blocks. */
-    merged_block->size += block->size;
-    GET_FOOTER(block)->size = GET_SIZE(merged_block);
+    merged_block->size += GET_SIZE(block);
+    GET_FOOTER(merged_block)->size = GET_SIZE(merged_block);
   }
 
   /* merge with next block. */
@@ -686,7 +684,7 @@ static header * coalesce_block(header * block)
 
     /* merge blocks. */
     merged_block->size += GET_SIZE(block);
-    GET_FOOTER(block)->size = GET_SIZE(merged_block);
+    GET_FOOTER(merged_block)->size = GET_SIZE(merged_block);
   }
 
   return merged_block;
@@ -714,4 +712,112 @@ void mm_exit(void)
     header * block = list_item(e->prev, header, elem);
     mm_free(GET_PAYLOAD(block));
   }
+}
+
+/*
+ * mm_check - Checking heap for consistency.
+ */
+int mm_check(void)
+{
+  int index;
+  list_elem * e, * t;
+  header * free_block, * alloc_block, * heap_block;
+
+  /* check every block in the free list.  */
+  for (index = 0; index < BIN_SIZE; index++)
+  {
+    if (!list_empty(&free_bin[index]))
+    {
+      e = list_first(&free_bin[index]);
+      for (; !list_is_tail(e); e = e->next)
+      {
+        free_block = list_item(e, header, elem);
+
+        /* marked as free? */
+        if (IS_ALLOCATED(free_block))
+        {
+          mm_check_alert("alloc state error: should be free");
+          return 0;
+        }
+
+        /* right index? */
+        if (size_to_index(GET_SIZE(free_block)) != index)
+        {
+          mm_check_alert("index error: not proper index");
+          return 0;
+        }
+
+        /* not countiguous free blocks? */
+        if (!IS_PREV_ALLOCATED(free_block))
+          return 0;
+        else if (!IS_ALLOCATED(GET_NEXT(free_block)))
+          return 0;
+      }
+    }
+  }
+
+  /* check every block in the alloc list. */
+  e = list_first(alloc_list);
+  for (; !list_is_tail(e); e = e->next)
+  {
+    alloc_block = list_item(e, header, elem);
+
+    t = list_first(alloc_list);
+    for (; !list_is_tail(t); t = t->next)
+      if (t != e)
+      {
+        header * tmp_block = list_item(t, header, elem);
+
+        /* memory overlaped? */
+        if (GET_PAYLOAD(alloc_block) < GET_PAYLOAD(tmp_block))
+          if (GET_PAYLOAD(tmp_block) < (void *) GET_NEXT(alloc_block))
+          {
+            mm_check_alert("overlap error: alloc blocks overlaped");
+            return 0;
+          }
+
+        if (GET_PAYLOAD(tmp_block) < GET_PAYLOAD(alloc_block))
+          if (GET_PAYLOAD(alloc_block) < (void *) GET_NEXT(tmp_block))
+          {
+            mm_check_alert("overlap error: alloc blocks overlaped");
+            return 0;
+          }
+      }
+  }
+
+  /* check every block in the heap. */
+  heap_block = GET_NEXT(dummy_head);
+  for(; GET_SIZE(heap_block); heap_block = GET_NEXT(heap_block))
+  {
+    list_elem * left = (list_elem *) mem_heap_lo();
+    list_elem * right = (list_elem *) mem_heap_hi();
+    e = &heap_block->elem;
+
+    /* exist in heap? */
+    if (e == NULL || left > e || e > right)
+    {
+      mm_check_alert("unvalid pointer");
+      return 0;
+    }
+
+    /* valid point? */
+    if (e->prev == NULL || left > e->prev || e->prev > right)
+    {
+      mm_check_alert("unvalid pointer");
+      return 0;
+    }
+    if (e->next == NULL || left > e->next || e->next > right)
+    {
+      mm_check_alert("unvalid pointer");
+      return 0;
+    }
+  }
+
+  /* test over. */
+  return 1;
+}
+
+static void mm_check_alert(const char * str)
+{
+  printf("[mm_check] %s\n", str);
 }
