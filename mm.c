@@ -478,7 +478,6 @@ int mm_init(range_t ** ranges)
     = (list *) ((char *) allocated_area + ALIGN(BIN_SIZE * sizeof(list)));
   list_init(alloc_list);
 
-  /* DON't MODIFY THIS STAGE AND LEAVE IT AS IT WAS */
   gl_ranges = ranges;
   return 0;
 }
@@ -633,10 +632,14 @@ void mm_free(void * ptr)
 
   header * free_block = GET_HEADER(ptr);
 
-  /* remove from alloc list. */
+  /* remove from alloc list and check double free. */
   if (list_remove(&free_block->elem) == NULL)
-    return;
+  {
+    perror("double freed.\n");
+    exit(-1);
+  }
 
+  /* put block to free list. */
   arrange_block(free_block);
 }
 
