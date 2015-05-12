@@ -1,9 +1,203 @@
 /*
- * In this naive approach, a block is allocated by simply incrementing
- * the brk pointer.  A block is pure payload. There are no headers or
- * footers.  Blocks are never coalesced or reused. Realloc is
- * implemented directly using mm_malloc and mm_free.
- */
+ *  mm.c -
+ *  copyright
+ *
+ *
+ *
+ *
+____Strcuture of free block______________________________________
+
+                          0 a b   a: previous block is allocated
+    +--------------------+-+-+-+
+ h  |    size:           |0|x|0|  b: this block is allocated
+ e  +--------------------+-+-+-+
+ a  |    list_elem:            |  pointer for linking free list
+ d  |      prev, next          |
+    +--------------------------+
+    |                          |
+    |      :                   |
+    |      :                   |
+    |    payload               |
+    |      :                   |
+    |      :                   |
+ f  |                          |
+ o  +--------------------+-+-+-+
+ o  |    size:           |0|0|0|
+ t  +--------------------+-+-+-+
+                          0 0 b
+
+  Free block consists of three component:
+  header, footer, and payload.
+
+  1. Header
+    The header has informations of the free block.
+    It has two member: size, list_elem.
+
+    The size member shows block size include all parts of the block.
+    (header + payload + footer)
+    And because all blocks are aligned by single word or double word,
+    two least significant bits are used to disignate allocated states.
+    In this file, adjust allocated status are used to increase utilization.
+
+    The list_elem member just points other list_elems.
+
+     elem      elem      elem
+    +----+    +----+    +----+
+    |    | <- |    | -> |    |
+    +----+    +----+    +----+
+
+    By apply some pointer arithmatics, pointer to header can be
+    obtained. - using macro functions(OFFSET_OF(), list_item()).
+
+     header
+    +------+
+    | size |
+    +------+
+    | elem |
+    +------+
+
+    In this file, linked list is implemented in that way.
+    Free blocks are linked with their list_elem member.
+
+  2. Footer
+    The footer is replica of the header.
+    It has just one memeber - size.
+    It is used to get pointer to header.
+    Each block can get previous free block using
+    footer->size of previous block.
+
+  3. Payload
+    Empty spaces for free blocks.
+    Maybe there are free blocks with size 0 payload.
+_________________________________________________________________
+
+
+____Structure of allocted block__________________________________
+
+                          0 a b   a: previous block is allocated
+    +--------------------+-+-+-+
+ h  |    size:           |0|x|1|  b: block is allocated
+ e  +--------------------+-+-+-+
+ a  |    list_elem:            |  pointer for linking alloc list
+ d  |      prev, next          |
+    +--------------------------+
+    |                          |
+    |      :                   |
+    |      :                   |
+    |    payload               |
+    |      :                   |
+    |      :                   |
+    |                          |
+    |                          |
+    |                          |
+    +--------------------------+
+
+  Allocated block consists of two component:
+  header, and payload.
+
+  1. Header
+    The header has informations of the allocated block.
+    Like free block, it has two member: size, list_elem.
+
+    The size member shows block size include all parts of the block.
+    But there are no footer for allocated block,
+    it only counts header and payload.
+    Also, size member has incoded allocation states.
+
+    The list_elem member used to link blocks, ofcourse.
+    mm_exit() frees all unfreed blocks using alloc_list.
+    When there are members in alloc_list, there is memory leak.
+
+  2. Payload
+    The payload for allocated block includes spaces
+    which called footer until the block is allocated.
+    They are used to payload to increase mem util.
+_________________________________________________________________
+
+
+____Organization of the free list________________________________
+
+  In this file, there are "free_bin" which hold array of free
+  lists. Each class is sorted by block size. This makes efficient
+  search for best fit block.
+
+    free_bin
+  +----+----+----+----+---      ---+----+----+----+----+
+  | 00 | 01 | 02 | 03 |    ....    | 44 | 45 | 46 | 47 |
+  +----+----+----+----+---      ---+----+----+----+----+
+    ||   ||   ||                     ||   ||
+   +--+ +--+ +--+                   +--+ +--+
+   |  | |  | |  |                   |  | |  |
+   +--+ +--+ +--+                   +--+ +--+
+         ||   ||                     ||
+        +--+ +--+                   +--+
+        |  | |  |                   |  |
+        +--+ +--+                   +--+
+         ||                          ||
+        +--+                        +--+
+        |  |                        |  |
+         ..                          ..
+
+      free lists.
+
+  There are slots for 32 small size classes and 16 big size classes.
+  Each free list is related to unique bin slot. Small size classes
+  are ordered in linear increase of size. Big size classes are
+  ordered in exponential increase of size. Detail calculates are
+  important for the performance.
+
+  Free lists (and also allocation list) are implemeted to doubly
+  linked list using 'list' and 'list_elem' structures.
+  This doubly linked lists have two header elements: the "head"
+  just before the first element and the "tail" just after the
+  last element.  The `prev' link of the front header is null, as
+  is the `next' link of the back header.
+  Their other two links point toward each other via the interior
+  elements of the list.
+
+  An empty list looks like this:
+
+                      +------+     +------+
+                  /---| head |<--->| tail |---/
+                      +------+     +------+
+
+  A list with two elements in it looks like this:
+
+        +------+     +-------+     +-------+     +------+
+    /---| head |<--->|   1   |<--->|   2   |<--->| tail |---/
+        +------+     +-------+     +-------+     +------+
+_________________________________________________________________
+
+
+____Algorithms for handling free lists___________________________
+
+  When malloc() called, it make 'index' to free_bin. This
+  is done by size_to_index() function. Next, malloc searches
+  free_bin slots from free_bin[index] which are enough to
+  allocate and not empty. After found proper free list,
+  malloc get best fit block and return the pointer to block.
+
+  The best fit algorithm takes O(n) times becuse if there are
+  no small(do not have to split) blocks, it searches all blocks
+  in the free list and finds the smallest.  But it does not search
+  entire heap, so the overhead is not that bad.
+
+  If the fit block is somewhat big, then split it into two
+  saperated blocks. The block that is not allocated is
+  re-arranged between free lists. (because the block size
+  is changed)
+
+  When free() called, free immediately coalesces free blocks
+  using boundery tags. Merging with previous & next block takes
+  O(1) time. The merged block then arranged to "free_bin" by
+  its index(of course it uses size_to_index()).
+
+  The insertion and removal for free list(and alloc_list) is
+  done by simple list operations. Becuase the dummy blocks
+  are allocated when mm_init() called, there are no corner cases.
+
+_________________________________________________________________ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
@@ -34,8 +228,9 @@ team_t team = {
 static range_t ** gl_ranges;
 
 /* default sizes for bin, expanding heap. */
-#define BIN_SIZE 90
-#define MIN_HEAP_INC 1<<10
+#define BIN_SIZE 48
+#define FIXED_AREA 32
+#define MIN_HEAP_INC ALIGN(1<<9)
 
 /* single word (4) or double word (8) alignment */
 #define ALIGNMENT 8
@@ -49,7 +244,10 @@ static range_t ** gl_ranges;
 /* find the offset of member of a struct. */
 #define OFFSET_OF(type, member) ((size_t) &((type *) 0)->member)
 
-/* take values for header. */
+/*
+ * shorthand functions -take values from header and footer
+ * using quite dirty pointer arithmatics.
+ */
 #define GET_SIZE(h) ((size_t) (((header *) h)->size & ~0x7))
 
 #define GET_ALLOC(h) ((int) (((header *) h)->size & 0x3))
@@ -71,25 +269,24 @@ static range_t ** gl_ranges;
 
 #define GET_PAYLOAD(p) ((void *) ((char *) p + ALIGN(sizeof(header))))
 
+/* allocation states. */
 #define NONE 0x0
 #define ALLOCATED 0x1
 #define ADJUST_ALLOCATED 0x2
 
+/* allocation state operations. */
 #define IS_ALLOCATED(h) \
   ((GET_ALLOC(h) & ALLOCATED) ? true : false)
 
 #define IS_ADJUST_ALLOCATED(h) \
   ((GET_ALLOC(h) & ADJUST_ALLOCATED) ? true : false)
 
+#define SET_ALLOC_FREE(block) block->size = (block->size & ~0x1)
+
 /* use hand-made boolean. */
 typedef char bool;
 #define true 1
 #define false 0
-
-/* enum to implement redblack tree. */
-typedef enum {
-  BLACK, RED
-} rb_color;
 
 /* List element. */
 typedef struct list_elem {
@@ -112,19 +309,19 @@ typedef struct {
 /* Block footer. */
 typedef struct {
   size_t size;
-  rb_color color;
 } footer;
 
 /*
  * macro functions which are used to get ptr to STRUCT from its LIST_ELEM.
- * using example for :
+ *
+ * using example for list_item:
  *   struct block * new_block;
  *   new_block = list_get(&old_block->m_name, struct block, m_name);
  */
 #define list_item(list_elem, type, member) \
   ((type *) ((char *) &(list_elem)->next - OFFSET_OF(type, member.next)))
 
-/* check the position of elem. */
+/* check the position of list_elem. */
 #define list_is_head(list_elem) \
   ((bool) (list_elem != NULL && list_elem->prev == NULL && list_elem->next != NULL))
 
@@ -134,29 +331,15 @@ typedef struct {
 #define list_is_tail(list_elem) \
   ((bool) (list_elem != NULL && list_elem->prev != NULL && list_elem->next == NULL))
 
-/* tree functions equal to list functions. */
-#define tree_item(tree_elem, type, member) \
-  ((type *) ((char *) &(tree_elem)->next - OFFSET_OF(type, member.next)))
-
-#define tree_init(tree) list_init(tree)
-#define tree_root(tree) list_first(tree)
-#define tree_empty(tree) list_empty(tree)
-
-/* list operations. */
+/* list operations proto type. */
 static void list_init(list *);
 static list_elem * list_first(list *);
 static void list_insert(list *, list_elem *);
 static list_elem * list_remove(list_elem *);
 static bool list_empty(list *);
 
-/* rbtree operations. */
-static void tree_insert(list *, list_elem *);
-static list_elem * tree_get_best_fit(list *, size_t);
-static list_elem * tree_remove(list_elem *);
-
-/* private functions. */
+/* private functions proto type. */
 static int size_to_index(size_t);
-static void set_free_state(header *);
 static header * get_fit_block(list *, size_t);
 static header * split_block(header *, size_t);
 static bool expand_heap(size_t);
@@ -166,71 +349,8 @@ static header * coalesce_block(header *);
 /* array of free lists. */
 static list * free_bin;
 
-/* alloc list. */
-static list alloc_list;
-
-/* for debugging. */
-static int debug_indent;
-static int debug_count;
-static bool debug_flag;
-
-static void df(bool flag)
-{
-  debug_flag = flag;
-}
-
-static void inc(void)
-{
-  debug_indent++;
-}
-
-static void dec(void)
-{
-  debug_indent--;
-}
-
-static void prti(void)
-{
-  int i;
-  for (i = 0; i < debug_indent; i++)
-    printf(" | ");
-}
-
-static void dc(void)
-{
-  if (debug_flag)
-  {
-    prti();
-    printf(" Debug Point : (%d)\n", ++debug_count);
-  }
-}
-
-static void prt(const char * str, long long num)
-{
-  if (debug_flag)
-  {
-    prti();
-    printf(" %s : %lld\n", str, num);
-  }
-}
-
-static void prtp(const char * str, void * ptr)
-{
-  if (debug_flag)
-  {
-    prti();
-    printf(" %s : %p\n", str, ptr);
-  }
-}
-
-static void msg(const char * str)
-{
-  if (debug_flag)
-  {
-    prti();
-    printf(" %s\n", str);
-  }
-}
+/* pointer to alloc list. */
+static list * alloc_list;
 
 /*
  * remove_range - manipulate range lists
@@ -258,6 +378,8 @@ static void remove_range(range_t **ranges, char *lo)
  * list functions - used to maipulate linked list.
  *  used for alloc_list. (allocated block list)
  */
+
+/* initiate list. */
 static void list_init(list * list)
 {
   list->head.prev = NULL;
@@ -266,11 +388,13 @@ static void list_init(list * list)
   list->tail.next = NULL;
 }
 
+/* return first object in the list. */
 static list_elem * list_first(list * list)
 {
   return list->head.next;
 }
 
+/* insert object to list. */
 static void list_insert(list * list, list_elem * elem)
 {
   list_elem * e = list_first(list);
@@ -281,128 +405,49 @@ static void list_insert(list * list, list_elem * elem)
   e->prev = elem;
 }
 
+/* remove object in the list. */
 static list_elem * list_remove(list_elem * elem)
 {
+  /* return NULL if the object is not in the list. */
   if (!list_is_body(elem))
     return NULL;
 
+  /* return next object for convinient repeatition. */
   elem->prev->next = elem->next;
   elem->next->prev = elem->prev;
   return elem->next;
 }
 
+/* return if the list is empty. */
 static bool list_empty(list * list)
 {
   return (bool) (list->head.next == &list->tail);
 }
 
-/*
- * tree functions - used to manipulate redblack tree.
- *  used for free_bin[index]. (array of free block list)
- */
-
-static list_elem * tree_insert_rec(list_elem *, list_elem *, list_elem *);
-static bool is_big_enough(header *, size_t);
-static bool is_small_to_split(header *, size_t);
-
-/* insert free block(elem) to tree. */
-static void tree_insert(list * tree, list_elem * elem)
-{
-  list_elem * root = tree_root(tree);
-  tree_insert_rec(root, elem, &tree->tail);
-}
-
-static list_elem * tree_insert_rec
-  (list_elem * root, list_elem * elem, list_elem * nil)
-{
-  if (root == nil)
-    // TODO
-
-    return NULL;
-}
-
-/*
- * search best fit block not less than size from tree,
- * remove that block from tree, and return the block.
- */
-static list_elem * tree_get_best_fit(list * tree, size_t size)
-{
-  /* search best fit block. */
-  list_elem * root = tree_root(tree);
-  root = tree_retrieve_rec(root, size, &tree->tail);
-
-  /* remove block from free tree. */
-  tree_remove(root);
-
-  return root;
-}
-
-static list_elem * tree_retrieve_rec
-  (list_elem * elem, size_t size, list_elem * nil)
-{
-  if (elem == nil)
-    return NULL;
-
-  header * block = tree_item(elem, header, elem);
-
-  if (is_big_enough(block, size) && is_small_to_split(block, size))
-    return elem
-  else if ()
-  {
-    // TODO
-
-
-  }
-}
-
-static bool is_big_enough(header * block, size_t size)
-{
-  return (bool) (size <= GET_SIZE(block));
-}
-
-static bool is_small_to_split(header * block, size_t size)
-{
-  return (bool) (GET_SIZE(block) < size + MIN_MALLOC);
-}
-
-/* remove free block(elem) from its tree.  */
-static list_elem * tree_remove(list_elem * elem)
-{
-  // TODO
-  return NULL;
-}
-
-/* utility functions. */
+/* return appropriate index for aligned block size(bytes). */
 static int size_to_index(size_t bytes)
 {
   unsigned int words = (bytes - 1) / ALIGNMENT + 1;
-  if (words <= 64)
+  if (words <= FIXED_AREA)
     return words - 2;
   else
   {
-    int i = 1, j = 8;
-    for (words -= 64; j < words; i++, j <<= 1) ;
-    return i + 62;
+    int i = 1, j = 1;
+    for (words -= FIXED_AREA; j < words; i++, j <<= 1) ;
+    return i + FIXED_AREA - 2;
   }
-}
-
-static void set_free_state(header * block)
-{
-  block->size >>= 1;
-  block->size <<= 1;
 }
 
 /*
  * mm_init - initialize the malloc package.
+ *  initialize free_bin, alloc_list.
+ *  also allocate dummy blocks.
  */
 int mm_init(range_t ** ranges)
 {
-  //df(true);
-  msg("<init called>");
-
-  /* initialize free_bin of free lists and allocate space for dummy block. */
+  /* initialize free_bin of free lists and allocate space for dummy blocks. */
   size_t size
-    = ALIGN(BIN_SIZE * sizeof(list))                  // bin[BIN_SIZE].
+    = ALIGN((BIN_SIZE + 1) * sizeof(list))            // free_bin and alloc_list.
     + ALIGN(sizeof(header)) + ALIGN(sizeof(footer))   // dummy head block.
     + ALIGN(sizeof(header));                          // dummy tail block.
   void * allocated_area = mem_sbrk(size);
@@ -420,7 +465,7 @@ int mm_init(range_t ** ranges)
 
   /* initialize dummy blocks. */
   header * dummy_head
-    = (header *) ((char *) allocated_area + ALIGN(BIN_SIZE * sizeof(list)));
+    = (header *) ((char *) allocated_area + ALIGN((BIN_SIZE + 1) * sizeof(list)));
   dummy_head->size = MIN_MALLOC | ALLOCATED;
   GET_FOOTER(dummy_head)->size = MIN_MALLOC | ALLOCATED;
 
@@ -429,7 +474,9 @@ int mm_init(range_t ** ranges)
   dummy_tail->size = ALIGN(sizeof(size_t)) | ADJUST_ALLOCATED | ALLOCATED;
 
   /* initialize alloc list. */
-  list_init(&alloc_list);
+  alloc_list
+    = (list *) ((char *) allocated_area + ALIGN(BIN_SIZE * sizeof(list)));
+  list_init(alloc_list);
 
   /* DON't MODIFY THIS STAGE AND LEAVE IT AS IT WAS */
   gl_ranges = ranges;
@@ -444,9 +491,6 @@ void * mm_malloc(size_t payload)
 {
   header * ret_block;
 
-  inc();
-  msg("<malloc called>");
-
   /* set bytes for allocate, considering minimum value. */
   size_t bytes = ALIGN(sizeof(header)) + ALIGN(payload);
   if (bytes < MIN_MALLOC)
@@ -456,19 +500,15 @@ void * mm_malloc(size_t payload)
   int index = size_to_index(bytes);
   while (true)
   {
-    /* search best-fit free block. */
     if (!list_empty(&free_bin[index]))
     {
-      msg("<malloc calls search>");
+      /* search best-fit free block. */
       ret_block = get_fit_block(&free_bin[index], bytes);
       if (ret_block != NULL)
       {
         /* set allocate states. */
         ret_block->size |= ALLOCATED;
         GET_NEXT(ret_block)->size |= ADJUST_ALLOCATED;
-
-        prt("<malloc found block in bin[index]>", index);
-        dec();
 
         return GET_PAYLOAD(ret_block);
       }
@@ -477,12 +517,10 @@ void * mm_malloc(size_t payload)
     /* get more space when failed to allocate proper block. */
     if (++index == BIN_SIZE)
     {
-      msg("<malloc calls expand>");
       if (!expand_heap(bytes))
         return NULL;
       else
         index = size_to_index(bytes);
-      msg("<malloc get return expand>");
     }
   }
 }
@@ -493,45 +531,36 @@ void * mm_malloc(size_t payload)
  */
 static header * get_fit_block(list * list, size_t bytes)
 {
-  inc();
-  msg("<search called>");
-
   header * fit_block = NULL;
 
   list_elem * e;
   for (e = list_first(list); !list_is_tail(e); e = e->next)
   {
-    header * e_block = list_item(e, header, elem);
+    header * block = list_item(e, header, elem);
 
-    /* check if e_block is big enough to match. */
-    if (e_block->size >= bytes)
+    /* check if block is big enough to match. */
+    if (block->size >= bytes)
     {
-      msg("<search found enough block>");
       /* exact size. */
-      if (e_block->size < bytes + MIN_MALLOC)
+      if (block->size < bytes + MIN_MALLOC)
       {
         list_remove(e);
-        list_insert(&alloc_list, e);
-        dec();
-        return e_block;
+        list_insert(alloc_list, e);
+        return block;
       }
 
-      /* bigger size. */
-      else if (fit_block == NULL || fit_block->size > e_block->size)
-          fit_block = e_block;
+      /* check big size blocks to find smallest. */
+      else if (fit_block == NULL || fit_block->size > block->size)
+          fit_block = block;
     }
   }
 
   /* allocate big block after spliting.  */
   if (fit_block != NULL)
   {
-    msg("<search calls split>");
     fit_block = split_block(fit_block, bytes);
-    list_insert(&alloc_list, &fit_block->elem);
-    msg("<search get return split>");
+    list_insert(alloc_list, &fit_block->elem);
   }
-
-  dec();
   return fit_block;
 }
 
@@ -541,50 +570,34 @@ static header * get_fit_block(list * list, size_t bytes)
  */
 static header * split_block(header * block, size_t bytes)
 {
-  inc();
-  msg("<split called>");
-  prt("<split origin block size>", GET_SIZE(block));
-
   /* handle first block which remains in the free list. */
   block->size -= bytes;
   GET_FOOTER(block)->size = GET_SIZE(block);
-
-  prt("<split first block size>", GET_SIZE(block));
 
   /* handle second block which allocated to user. */
   block = GET_NEXT(block);
   block->size = bytes | ALLOCATED;
   GET_FOOTER(block)->size = block->size;
 
-  prt("<split second block size>", GET_SIZE(block));
-
-  msg("<split calls arrange>");
   /* rearrange first block. */
   list_remove(&GET_PREV(block)->elem);
   arrange_block(GET_PREV(block));
 
-  msg("<split get return arrange>");
-  prt("<splt rearranged first block size>", GET_SIZE(GET_PREV(block)));
-
   /* set allocated status of the next block. */
   GET_NEXT(block)->size |= ADJUST_ALLOCATED;
 
-  dec();
   return block;
 }
 
+/*
+ * expand_heap - Call mem_sbrk() to demand more heap space.
+ */
 static bool expand_heap(size_t bytes)
 {
-  inc();
-  msg("<expand called>");
-  prt("<expand demand(bytes)>", bytes);
-
   /* make bytes aligned and larger than or equal to minimum value. */
   bytes = ALIGN(bytes);
-  if (bytes < ALIGN(MIN_HEAP_INC))
-    bytes = ALIGN(MIN_HEAP_INC);
-
-  prt("<expand aligned(bytes)>", bytes);
+  if (bytes < MIN_HEAP_INC)
+    bytes = MIN_HEAP_INC;
 
   /* expand heap using mem_sbrk. */
   void * ptr = mem_sbrk(bytes);
@@ -592,6 +605,7 @@ static bool expand_heap(size_t bytes)
     return false;
   else
   {
+    /* set allocated area. */
     header * area = GET_HEADER(ptr);
     area->size
       = bytes
@@ -601,13 +615,8 @@ static bool expand_heap(size_t bytes)
     /* set dummy tail block. */
     GET_NEXT(area)->size = ALIGN(sizeof(header)) | ALLOCATED;
 
-    msg("<expand set chunk>");
-    msg("<expand calls arrange>");
-
+    /* put block to free list. */
     arrange_block(area);
-
-    msg("<expand get return arrange>");
-    dec();
 
     return true;
   }
@@ -615,6 +624,7 @@ static bool expand_heap(size_t bytes)
 
 /*
  * mm_free - Freeing a block does nothing.
+ *  immideately coalesce adjust blocks to prevent fragmentation.
  */
 void mm_free(void * ptr)
 {
@@ -623,45 +633,34 @@ void mm_free(void * ptr)
 
   header * free_block = GET_HEADER(ptr);
 
-  inc();
-  msg("<free called>");
-
   /* remove from alloc list. */
   if (list_remove(&free_block->elem) == NULL)
     return;
-  msg("<free removed block from alloc_list>");
 
-  msg("<free calls arrange>");
   arrange_block(free_block);
-
-  msg("<free arrange done>");
-  dec();
 }
 
+/*
+ * arrange_block - Arranging merged block to appropriate free list.
+ *  main part of free().
+ */
 static void arrange_block(header * free_block)
 {
-  inc();
-  msg("<arrange called>");
-  msg("<arrange calles coalesce>");
   /* set free and coalescing blocks. */
-  set_free_state(free_block);
+  SET_ALLOC_FREE(free_block);
   free_block = coalesce_block(free_block);
-  msg("<arrange get return coalesce>");
 
   /* add to free list. */
   int index = size_to_index(GET_SIZE(free_block));
   list_insert(&free_bin[index], &free_block->elem);
-
-  prt("<arrange add block to bin[index]>", index);
-  dec();
 }
 
+/*
+ * coalesce_block - Coalescing adjust blocks.
+ */
 static header * coalesce_block(header * block)
 {
   header * merged_block = block;
-
-  inc();
-  msg("<coalesce called>");
 
   /* merge with previous block. */
   if (!IS_ADJUST_ALLOCATED(block))
@@ -673,12 +672,10 @@ static header * coalesce_block(header * block)
     /* merge blocks. */
     merged_block->size += block->size;
     GET_FOOTER(block)->size = GET_SIZE(merged_block);
-
-    msg("<coalesce merge previous>");
   }
 
   /* merge with next block. */
-  if (!IS_ALLOCATED(GET_NEXT(merged_block)))
+  if (!IS_ALLOCATED(GET_NEXT(block)))
   {
     /* retreive next block. */
     block = GET_NEXT(block);
@@ -687,11 +684,8 @@ static header * coalesce_block(header * block)
     /* merge blocks. */
     merged_block->size += GET_SIZE(block);
     GET_FOOTER(block)->size = GET_SIZE(merged_block);
-
-    msg("<coalesce merge next>");
   }
 
-  dec();
   return merged_block;
 }
 
@@ -705,19 +699,16 @@ void * mm_realloc(void * ptr, size_t t)
 
 /*
  * mm_exit - finalize the malloc package.
+ *  freeing all blocks in alloc_list.
+ *  all malloced blocks are managed by alloc_list.
  */
 void mm_exit(void)
 {
-  msg("<mm_exit called>");
-
-  list_elem * e = list_first(&alloc_list);
+  list_elem * e = list_first(alloc_list);
   while (!list_is_tail(e))
   {
     e = e->next;
     header * block = list_item(e->prev, header, elem);
     mm_free(GET_PAYLOAD(block));
   }
-
-  msg("<mm_exit handled memory leak>");
-  dec();
 }
