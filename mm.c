@@ -633,8 +633,8 @@ void mm_free(void * ptr)
   /* remove from alloc list and check double free. */
   if (list_remove(&free_block->elem) == NULL)
   {
-    perror("double freed.\n");
-    return;
+    perror("double freed or freed unallocated block.\n");
+    exit(-1);
   }
 
   /* put block to free list. */
